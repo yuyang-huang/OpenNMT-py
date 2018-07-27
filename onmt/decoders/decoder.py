@@ -212,7 +212,7 @@ class StdRNNDecoder(RNNDecoderBase):
                             type of attention Tensor array of every time
                             step from the decoder.
         """
-        assert not self._copy  # TODO, no support yet.
+        assert not self._copy or self._reuse_copy_attn  # TODO, no support yet.
         assert not self._coverage  # TODO, no support yet.
 
         # Initialize local and return variables.
@@ -239,6 +239,8 @@ class StdRNNDecoder(RNNDecoderBase):
             memory_lengths=memory_lengths
         )
         attns["std"] = p_attn
+        if self._copy:
+            attns["copy"] = attns["std"]
 
         # Calculate the context gate.
         if self.context_gate is not None:
