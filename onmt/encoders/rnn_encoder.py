@@ -2,7 +2,6 @@
 from __future__ import division
 
 import torch.nn as nn
-import torch.nn.functional as F
 
 from torch.nn.utils.rnn import pack_padded_sequence as pack
 from torch.nn.utils.rnn import pad_packed_sequence as unpack
@@ -26,7 +25,7 @@ class RNNEncoder(EncoderBase):
 
     def __init__(self, rnn_type, bidirectional, num_layers,
                  hidden_size, dropout=0.0, embeddings=None,
-                 use_bridge=False):
+                 bridge_type=None):
         super(RNNEncoder, self).__init__()
         assert embeddings is not None
 
@@ -44,11 +43,12 @@ class RNNEncoder(EncoderBase):
                         bidirectional=bidirectional)
 
         # Initialize the bridge layer
-        self.use_bridge = use_bridge
+        self.use_bridge = bridge_type is not None
         if self.use_bridge:
             self._initialize_bridge(rnn_type,
                                     hidden_size,
-                                    num_layers)
+                                    num_layers,
+                                    bridge_type)
 
     def forward(self, src, lengths=None):
         "See :obj:`EncoderBase.forward()`"
@@ -74,7 +74,10 @@ class RNNEncoder(EncoderBase):
 
     def _initialize_bridge(self, rnn_type,
                            hidden_size,
-                           num_layers):
+                           num_layers,
+                           bridge_type):
+        if bridge_type not in ('relu', 'tanh'):
+            raise ValueError('Unsupported bridge type: %s' % bridge_type)
 
         # LSTM has hidden and cell state, other only one
         number_of_states = 2 if rnn_type == "LSTM" else 1
@@ -86,6 +89,10 @@ class RNNEncoder(EncoderBase):
                                                self.total_hidden_dim,
                                                bias=True)
                                      for _ in range(number_of_states)])
+        if bridge_type == 'relu':
+            self.bridge_activation = nn.ReLU()
+        elif bridge_type == 'tanh':
+            self.bridge_activation = nn.Tanh()
 
     def _bridge(self, hidden):
         """
@@ -97,7 +104,8 @@ class RNNEncoder(EncoderBase):
             """
             size = states.size()
             result = linear(states.view(-1, self.total_hidden_dim))
-            return F.relu(result).view(size)
+            result = self.bridge_activation(result)
+            return result.view(size)
 
         if isinstance(hidden, tuple):  # LSTM
             outs = tuple([bottle_hidden(layer, hidden[ix])
