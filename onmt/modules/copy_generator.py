@@ -6,6 +6,7 @@ import torch.cuda
 import onmt.inputters as inputters
 from onmt.utils.misc import aeq
 from onmt.utils import loss
+from onmt.modules.embeddings import TiedEmbeddingLinear
 
 
 class CopyGenerator(nn.Module):
@@ -59,9 +60,12 @@ class CopyGenerator(nn.Module):
 
     """
 
-    def __init__(self, input_size, tgt_dict):
+    def __init__(self, input_size, tgt_dict, out_embeddings=None):
         super(CopyGenerator, self).__init__()
-        self.linear = nn.Linear(input_size, len(tgt_dict))
+        if out_embeddings is not None:
+            self.linear = TiedEmbeddingLinear(input_size, out_embeddings)
+        else:
+            self.linear = nn.Linear(input_size, len(tgt_dict))
         self.linear_copy = nn.Linear(input_size, 1)
         self.tgt_dict = tgt_dict
         self.softmax = nn.Softmax(dim=1)

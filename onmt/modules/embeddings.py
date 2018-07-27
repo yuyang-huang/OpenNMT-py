@@ -3,6 +3,8 @@ import math
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from torch.nn.parameter import Parameter
 
 from onmt.modules.util_class import Elementwise
 
@@ -196,3 +198,22 @@ class Embeddings(nn.Module):
             source = self.make_embedding(source)
 
         return source
+
+
+class TiedEmbeddingLinear(nn.Linear):
+    def __init__(self, in_features, embeddings, bias=True):
+        super(nn.Linear, self).__init__()
+        vocab_size, emb_dim = embeddings.size()
+        self.in_features = in_features
+        self.out_features = vocab_size
+        self.weight = Parameter(torch.Tensor(emb_dim, in_features))
+        if bias:
+            self.bias = Parameter(torch.Tensor(vocab_size))
+        else:
+            self.register_parameter('bias', None)
+        self.reset_parameters()
+        self.embeddings = embeddings
+
+    def forward(self, input):
+        kernel = torch.mm(self.embeddings, self.weight).tanh()
+        return F.linear(input, kernel, self.bias)
