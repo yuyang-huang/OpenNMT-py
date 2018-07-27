@@ -204,8 +204,13 @@ def build_base_model(model_opt, fields, gpu, checkpoint=None):
         if model_opt.share_decoder_embeddings:
             generator[0].weight = decoder.embeddings.word_lut.weight
     else:
+        if model_opt.share_decoder_embeddings:
+            tied_embeddings = decoder.embeddings.word_lut.weight
+        else:
+            tied_embeddings = None
         generator = CopyGenerator(model_opt.rnn_size,
-                                  fields["tgt"].vocab)
+                                  fields["tgt"].vocab,
+                                  tied_embeddings=tied_embeddings)
 
     # Load the model states from checkpoint or initialize them.
     if checkpoint is not None:
