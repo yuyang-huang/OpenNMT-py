@@ -420,6 +420,8 @@ def translate_opts(parser):
                        sequence)""")
     group.add_argument('-src_dir', default="",
                        help='Source directory for image or audio files')
+    group.add_argument('-src_seq_length_trunc', type=int, default=0,
+                       help="Truncate source sequence length.")
     group.add_argument('-tgt',
                        help='True target sequence (optional)')
     group.add_argument('-output', default='pred.txt',
