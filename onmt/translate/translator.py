@@ -38,8 +38,8 @@ def build_translator(opt, report_score=True, logger=None, out_file=None):
 
     kwargs = {k: getattr(opt, k)
               for k in ["beam_size", "n_best", "max_length", "min_length",
-                        "stepwise_penalty", "block_ngram_repeat",
-                        "ignore_when_blocking", "dump_beam", "report_bleu",
+                        "stepwise_penalty", "block_ngram_repeat", "src_seq_length_trunc",
+                        "ignore_when_blocking", "dump_beam", "report_bleu", "report_rouge",
                         "data_type", "replace_unk", "gpu", "verbose", "fast"]}
 
     translator = Translator(model, fields, global_scorer=scorer,
@@ -96,7 +96,8 @@ class Translator(object):
                  report_rouge=False,
                  verbose=False,
                  out_file=None,
-                 fast=False):
+                 fast=False,
+                 src_seq_length_trunc=0):
         self.logger = logger
         self.gpu = gpu
         self.cuda = gpu > -1
@@ -126,6 +127,7 @@ class Translator(object):
         self.report_bleu = report_bleu
         self.report_rouge = report_rouge
         self.fast = fast
+        self.src_seq_length_trunc = src_seq_length_trunc
 
         # for debugging
         self.beam_trace = self.dump_beam != ""
@@ -181,6 +183,7 @@ class Translator(object):
                                        tgt_path=tgt_path,
                                        tgt_data_iter=tgt_data_iter,
                                        src_dir=src_dir,
+                                       src_seq_length_trunc=self.src_seq_length_trunc,
                                        sample_rate=self.sample_rate,
                                        window_size=self.window_size,
                                        window_stride=self.window_stride,
