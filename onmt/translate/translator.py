@@ -329,7 +329,6 @@ class Translator(object):
         assert data.data_type == 'text'
         assert not self.dump_beam
         assert not self.use_filter_pred
-        assert self.block_ngram_repeat == 0
 
         beam_size = self.beam_size
         batch_size = batch.batch_size
@@ -427,6 +426,16 @@ class Translator(object):
 
             # Multiply probs by the beam probability.
             log_probs += topk_log_probs.view(-1).unsqueeze(1)
+
+            # Block ngram repeats
+            if step > self.block_ngram_repeat > 0:
+                # Take the trailing n-gram as the target for sliding window matching
+                match_target = alive_seq[:, -self.block_ngram_repeat:]
+                for j in range(1, step + 1 - self.block_ngram_repeat):
+                    # If `window` matches `match_target`, prune the hypothesis
+                    window = alive_seq[:, j:j + self.block_ngram_repeat]
+                    match = (window - match_target).abs().sum(1).eq(0)
+                    log_probs[match] = -1e20
 
             # Coverage penalty
             if alive_attn is not None:
