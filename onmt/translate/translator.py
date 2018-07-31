@@ -327,7 +327,6 @@ class Translator(object):
 
         # TODO: support these blacklisted features.
         assert data.data_type == 'text'
-        assert not self.copy_attn
         assert not self.dump_beam
         assert not self.use_filter_pred
         assert self.block_ngram_repeat == 0
@@ -345,6 +344,10 @@ class Translator(object):
         enc_states, memory_bank = self.model.encoder(src, src_lengths)
         dec_states = self.model.decoder.init_decoder_state(
             src, memory_bank, enc_states, with_cache=True)
+
+        # Use variables to hold these attributes since batch size shrinks as search progresses
+        src_map = batch.src_map
+        src_indices = batch.indices
 
         # Tile states and memory beam_size times.
         dec_states.map_batch_fn(
@@ -381,6 +384,12 @@ class Translator(object):
 
         max_length += 1
 
+        def _reorder(x, dim1, dim2):
+            return (x.view(dim1, dim2, -1)
+                    .transpose(0, 1)
+                    .contiguous()
+                    .view(dim1 * dim2, -1))
+
         for step in range(max_length):
             decoder_input = alive_seq[:, -1].view(1, -1, 1)
 
@@ -391,10 +400,26 @@ class Translator(object):
                 dec_states,
                 memory_lengths=memory_lengths,
                 step=step)
+            dec_out = dec_out.squeeze(0)
 
             # Generator forward.
-            log_probs = self.model.generator.forward(dec_out.squeeze(0))
-            vocab_size = log_probs.size(-1)
+            if self.copy_attn:
+                out = self.model.generator.forward(
+                    _reorder(dec_out, batch_size, beam_size),
+                    _reorder(attn['copy'].squeeze(0), batch_size, beam_size),
+                    src_map)
+                vocab_size = len(vocab)
+                probs = _collapse_copy_scores(
+                    out.data.view(beam_size, batch_size, -1),
+                    src_indices,
+                    vocab,
+                    data.src_vocabs)
+                log_probs = _reorder(
+                    probs.narrow(-1, 0, vocab_size).view(-1, vocab_size).log(),
+                    beam_size, batch_size)
+            else:
+                log_probs = self.model.generator.forward(dec_out)
+                vocab_size = log_probs.size(-1)
 
             if step < min_length:
                 log_probs[:, end_token] = -1e20
@@ -453,16 +478,21 @@ class Translator(object):
                         else:
                             results["attention"][b].append(
                                 attention[:, i, n, :memory_lengths[i]])
-                non_finished = end_condition.eq(0).nonzero().view(-1)
+
                 # If all sentences are translated, no need to go further.
+                non_finished = end_condition.eq(0).nonzero().view(-1)
                 if len(non_finished) == 0:
                     break
+                batch_size = len(non_finished)
+
                 # Remove finished batches for the next step.
                 topk_log_probs = topk_log_probs.index_select(
                     0, non_finished.to(topk_log_probs.device))
                 topk_ids = topk_ids.index_select(0, non_finished)
                 batch_index = batch_index.index_select(0, non_finished)
                 batch_offset = batch_offset.index_select(0, non_finished)
+                src_map = src_map.index_select(1, non_finished)
+                src_indices = src_indices.index_select(0, non_finished)
 
             # Select and reorder alive batches.
             select_indices = batch_index.view(-1)
@@ -685,3 +715,31 @@ class Translator(object):
             stdin=self.out_file).decode("utf-8")
         msg = res.strip()
         return msg
+
+
+def _collapse_copy_scores(scores, batch_indices, tgt_vocab, src_vocabs):
+    """
+    Given scores from an expanded dictionary
+    corresponeding to a batch, sums together copies,
+    with a dictionary word when it is ambigious.
+    """
+    offset = len(tgt_vocab)
+    batch_size = batch_indices.size(0)
+    for b in range(batch_size):
+        blank = []
+        fill = []
+        index = batch_indices.data[b]
+        src_vocab = src_vocabs[index]
+        for i in range(1, len(src_vocab)):
+            sw = src_vocab.itos[i]
+            ti = tgt_vocab.stoi[sw]
+            if ti != 0:
+                blank.append(offset + i)
+                fill.append(ti)
+        if blank:
+            blank = torch.Tensor(blank).type_as(batch_indices.data)
+            fill = torch.Tensor(fill).type_as(batch_indices.data)
+            scores[:, b].index_add_(1, fill,
+                                    scores[:, b].index_select(1, blank))
+            scores[:, b].index_fill_(1, blank, 1e-10)
+    return scores
