@@ -330,13 +330,13 @@ class Translator(object):
         assert not self.dump_beam
         assert not self.use_filter_pred
         assert self.block_ngram_repeat == 0
-        assert self.global_scorer.beta == 0
 
         beam_size = self.beam_size
         batch_size = batch.batch_size
         vocab = self.fields["tgt"].vocab
         start_token = vocab.stoi[inputters.BOS_WORD]
         end_token = vocab.stoi[inputters.EOS_WORD]
+        pad_token = self.fields['src'].vocab.stoi[inputters.PAD_WORD]
 
         # Encoder forward.
         src = inputters.make_features(batch, 'src', data.data_type)
@@ -348,6 +348,7 @@ class Translator(object):
         # Use variables to hold these attributes since batch size shrinks as search progresses
         src_map = batch.src_map
         src_indices = batch.indices
+        src_mask = src.eq(pad_token).transpose(0, 1).view(batch_size, 1, -1)
 
         # Tile states and memory beam_size times.
         dec_states.map_batch_fn(
@@ -427,16 +428,25 @@ class Translator(object):
             # Multiply probs by the beam probability.
             log_probs += topk_log_probs.view(-1).unsqueeze(1)
 
+            # Coverage penalty
+            if alive_attn is not None:
+                beta = self.global_scorer.beta
+                cov = alive_attn.sum(0) + attn['std'].squeeze(0)
+                coverage_penalty = torch.max(cov, torch.ones_like(cov))
+
+                # Ignore penalty at padding positions
+                coverage_penalty.view(batch_size, beam_size, -1).masked_fill_(src_mask, 0)
+                coverage_penalty = beta * (coverage_penalty.sum(1) - memory_lengths.float())
+                log_probs -= coverage_penalty.unsqueeze(1)
+
+            # Length penalty
             alpha = self.global_scorer.alpha
             length_penalty = ((5.0 + (step + 1)) / 6.0) ** alpha
+            log_probs /= length_penalty
 
             # Flatten probs into a list of possibilities.
-            curr_scores = log_probs / length_penalty
-            curr_scores = curr_scores.reshape(-1, beam_size * vocab_size)
-            topk_scores, topk_ids = curr_scores.topk(beam_size, dim=-1)
-
-            # Recover log probs.
-            topk_log_probs = topk_scores * length_penalty
+            log_probs = log_probs.reshape(-1, beam_size * vocab_size)
+            topk_scores, topk_ids = log_probs.topk(beam_size, dim=-1)
 
             # Resolve beam origin and true word ids.
             topk_beam_index = topk_ids.div(vocab_size)
@@ -446,6 +456,15 @@ class Translator(object):
             batch_index = (
                 topk_beam_index
                 + beam_offset[:topk_beam_index.size(0)].unsqueeze(1))
+
+            # Recover log probs.
+            topk_log_probs = topk_scores * length_penalty
+            if alive_attn is not None:
+                select_indices = batch_index.view(-1)
+                coverage_penalty = (coverage_penalty
+                                    .index_select(0, select_indices)
+                                    .view(batch_size, beam_size))
+                topk_log_probs += coverage_penalty
 
             # End condition is the top beam reached end_token.
             end_condition = topk_ids[:, 0].eq(end_token)
@@ -473,7 +492,7 @@ class Translator(object):
                     for n in range(n_best):
                         results["predictions"][b].append(predictions[i, n, 1:])
                         results["scores"][b].append(scores[i, n])
-                        if attention is None:
+                        if not return_attention:
                             results["attention"][b].append([])
                         else:
                             results["attention"][b].append(
@@ -493,8 +512,9 @@ class Translator(object):
                 batch_offset = batch_offset.index_select(0, non_finished)
                 src_map = src_map.index_select(1, non_finished)
                 src_indices = src_indices.index_select(0, non_finished)
+                src_mask = src_mask.index_select(0, non_finished)
 
-            # Select and reorder alive batches.
+            # Select and reorder inputs to the next step
             select_indices = batch_index.view(-1)
             alive_seq = alive_seq.index_select(0, select_indices)
             memory_bank = memory_bank.index_select(1, select_indices)
@@ -502,16 +522,16 @@ class Translator(object):
             dec_states.map_batch_fn(
                 lambda state, dim: state.index_select(dim, select_indices))
 
+            if return_attention or self.global_scorer.beta > 0:
+                # Update attention only if returning it or using coverage
+                if alive_attn is None:
+                    alive_attn = attn['std']
+                else:
+                    alive_attn = torch.cat([alive_attn, attn['std']], 0)
+                alive_attn = alive_attn.index_select(1, select_indices)
+
             # Append last prediction.
             alive_seq = torch.cat([alive_seq, topk_ids.view(-1, 1)], -1)
-
-            if return_attention:
-                current_attn = attn["std"].index_select(1, select_indices)
-                if alive_attn is None:
-                    alive_attn = current_attn
-                else:
-                    alive_attn = alive_attn.index_select(1, select_indices)
-                    alive_attn = torch.cat([alive_attn, current_attn], 0)
 
         return results
 
