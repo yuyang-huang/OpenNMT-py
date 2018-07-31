@@ -102,17 +102,17 @@ class TextDataset(DatasetBase):
         return len(ex.src)
 
     @staticmethod
-    def collapse_copy_scores(scores, batch, tgt_vocab, src_vocabs):
+    def collapse_copy_scores(scores, batch_indices, tgt_vocab, src_vocabs):
         """
         Given scores from an expanded dictionary
         corresponeding to a batch, sums together copies,
         with a dictionary word when it is ambigious.
         """
         offset = len(tgt_vocab)
-        for b in range(batch.batch_size):
+        for b in range(batch_indices.size(0)):
             blank = []
             fill = []
-            index = batch.indices.data[b]
+            index = batch_indices.data[b]
             src_vocab = src_vocabs[index]
             for i in range(1, len(src_vocab)):
                 sw = src_vocab.itos[i]
@@ -121,8 +121,8 @@ class TextDataset(DatasetBase):
                     blank.append(offset + i)
                     fill.append(ti)
             if blank:
-                blank = torch.Tensor(blank).type_as(batch.indices.data)
-                fill = torch.Tensor(fill).type_as(batch.indices.data)
+                blank = torch.Tensor(blank).type_as(batch_indices.data)
+                fill = torch.Tensor(fill).type_as(batch_indices.data)
                 scores[:, b].index_add_(1, fill,
                                         scores[:, b].index_select(1, blank))
                 scores[:, b].index_fill_(1, blank, 1e-10)

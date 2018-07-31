@@ -198,7 +198,7 @@ class CopyGeneratorLossCompute(loss.LossComputeBase):
         scores_data = scores.data.clone()
         scores_data = inputters.TextDataset.collapse_copy_scores(
             self._unbottle(scores_data, batch.batch_size),
-            batch, self.tgt_vocab, self.cur_dataset.src_vocabs)
+            batch.indices.data, self.tgt_vocab, self.cur_dataset.src_vocabs)
         scores_data = self._bottle(scores_data)
 
         # Correct target copy token instead of <unk>
