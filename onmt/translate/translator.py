@@ -329,7 +329,6 @@ class Translator(object):
         assert data.data_type == 'text'
         assert not self.dump_beam
         assert not self.use_filter_pred
-        assert self.block_ngram_repeat == 0
 
         beam_size = self.beam_size
         batch_size = batch.batch_size
@@ -427,6 +426,29 @@ class Translator(object):
 
             # Multiply probs by the beam probability.
             log_probs += topk_log_probs.view(-1).unsqueeze(1)
+
+            # Block ngram repeats
+            if step >= self.block_ngram_repeat > 0:
+                # For blocking n-gram repetition, take the trailing (n - 1)-gram
+                # of each beam as the target of sliding window matching
+                prefix_len = self.block_ngram_repeat - 1
+                if self.block_ngram_repeat > 1:
+                    match_target = alive_seq[:, -prefix_len:]
+                    noop_indices = torch.full_like(alive_seq[:, -1], start_token)
+
+                # Do sliding window matching
+                for j in range(1, step + 1 - prefix_len):
+                    window = alive_seq[:, j:j + self.block_ngram_repeat]
+                    if self.block_ngram_repeat > 1:
+                        # window: prefix + next_word
+                        # If `prefix` matches `match_target`, then set the probability
+                        # of generating `next_word` to zero.
+                        match = (window[:, :prefix_len] - match_target).abs().sum(1).eq(0)
+                        indices = torch.where(match, window[:, -1], noop_indices)
+                    else:
+                        # Just set the probability of any generated word to zero
+                        indices = window[:, -1]
+                    log_probs[:, indices] = -1e20
 
             # Coverage penalty
             if alive_attn is not None:
