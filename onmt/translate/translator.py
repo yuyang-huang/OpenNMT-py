@@ -311,7 +311,6 @@ class Translator(object):
                     data,
                     self.max_length,
                     min_length=self.min_length,
-                    n_best=self.n_best,
                     return_attention=self.replace_unk)
             else:
                 return self._translate_batch(batch, data)
@@ -321,7 +320,6 @@ class Translator(object):
                               data,
                               max_length,
                               min_length=0,
-                              n_best=1,
                               return_attention=False):
         # TODO: faster code path for beam_size == 1.
 
@@ -427,6 +425,11 @@ class Translator(object):
             # Multiply probs by the beam probability.
             log_probs += topk_log_probs.view(-1).unsqueeze(1)
 
+            # Prune the completed hypotheses
+            log_probs = torch.where(decoder_input.ne(end_token).squeeze(0),
+                                    log_probs,
+                                    torch.full_like(log_probs, -1e20))
+
             # Block ngram repeats
             if step >= self.block_ngram_repeat > 0:
                 # For blocking n-gram repetition, take the trailing (n - 1)-gram
@@ -488,14 +491,11 @@ class Translator(object):
                                     .view(batch_size, beam_size))
                 topk_log_probs += coverage_penalty
 
-            # End condition is the top beam reached end_token.
-            end_condition = topk_ids[:, 0].eq(end_token)
-            if step + 1 == max_length:
-                end_condition.fill_(1)
-            finished = end_condition.nonzero().view(-1)
-
             # Save result of finished sentences.
-            if len(finished) > 0:
+            finished = topk_ids.eq(end_token)
+            finished_indices = finished.nonzero()
+            num_finished = len(finished_indices)
+            if num_finished > 0:
                 # Reorder before output
                 select_indices = batch_index.view(-1)
                 predictions = (alive_seq
@@ -509,32 +509,35 @@ class Translator(object):
                     attention = None
                 scores = topk_scores.view(-1, beam_size)  # score is in correct order
 
-                for i in finished:
+                for n in range(num_finished):
+                    i, j = finished_indices[n].tolist()
                     b = batch_offset[i]
-                    for n in range(n_best):
-                        results["predictions"][b].append(predictions[i, n, 1:])
-                        results["scores"][b].append(scores[i, n])
-                        if not return_attention:
-                            results["attention"][b].append([])
-                        else:
-                            results["attention"][b].append(
-                                attention[:, i, n, :memory_lengths[i]])
+                    results["predictions"][b].append(predictions[i, j, 1:])
+                    results["scores"][b].append(scores[i, j])
+                    if not return_attention:
+                        results["attention"][b].append([])
+                    else:
+                        results["attention"][b].append(
+                            attention[:, i, j, :memory_lengths[i]])
 
-                # If all sentences are translated, no need to go further.
-                non_finished = end_condition.eq(0).nonzero().view(-1)
-                if len(non_finished) == 0:
-                    break
-                batch_size = len(non_finished)
+            # Prune sentences with length over `max_length`
+            if step + 1 == max_length:
+                break
 
-                # Remove finished batches for the next step.
-                topk_log_probs = topk_log_probs.index_select(
-                    0, non_finished.to(topk_log_probs.device))
-                topk_ids = topk_ids.index_select(0, non_finished)
-                batch_index = batch_index.index_select(0, non_finished)
-                batch_offset = batch_offset.index_select(0, non_finished)
-                src_map = src_map.index_select(1, non_finished)
-                src_indices = src_indices.index_select(0, non_finished)
-                src_mask = src_mask.index_select(0, non_finished)
+            # If all batches are finished, no need to go further.
+            non_finished = finished.sum(-1).lt(beam_size).nonzero().view(-1)
+            if len(non_finished) == 0:
+                break
+
+            # Remove finished batches for the next step.
+            batch_size = len(non_finished)
+            topk_log_probs = topk_log_probs.index_select(0, non_finished)
+            topk_ids = topk_ids.index_select(0, non_finished)
+            batch_index = batch_index.index_select(0, non_finished)
+            batch_offset = batch_offset.index_select(0, non_finished)
+            src_map = src_map.index_select(1, non_finished)
+            src_indices = src_indices.index_select(0, non_finished)
+            src_mask = src_mask.index_select(0, non_finished)
 
             # Select and reorder inputs to the next step
             select_indices = batch_index.view(-1)
@@ -554,6 +557,16 @@ class Translator(object):
 
             # Append last prediction.
             alive_seq = torch.cat([alive_seq, topk_ids.view(-1, 1)], -1)
+
+        # Sort the extracted full hypotheses according to score
+        for b in range(batch.batch_size):
+            scores = results["scores"][b]
+            if not scores:
+                raise RuntimeError('No hypothesis can be found. Try increase `max_length`.')
+
+            sorting_indices = sorted(range(len(scores)), key=scores.__getitem__, reverse=True)
+            for key in ('predictions', 'scores', 'attention'):
+                results[key][b] = [results[key][b][i] for i in sorting_indices]
 
         return results
 
