@@ -430,12 +430,19 @@ class Translator(object):
 
             # Save result of finished sentences.
             if len(finished) > 0:
-                predictions = alive_seq.view(-1, beam_size, alive_seq.size(-1))
-                scores = topk_scores.view(-1, beam_size)
-                attention = None
+                # Reorder before output
+                select_indices = batch_index.view(-1)
+                predictions = (alive_seq
+                               .index_select(0, select_indices)
+                               .view(-1, beam_size, alive_seq.size(-1)))
                 if alive_attn is not None:
-                    attention = alive_attn.view(
-                        alive_attn.size(0), -1, beam_size, alive_attn.size(-1))
+                    attention = (alive_attn
+                                 .index_select(1, select_indices)
+                                 .view(alive_attn.size(0), -1, beam_size, alive_attn.size(-1)))
+                else:
+                    attention = None
+                scores = topk_scores.view(-1, beam_size)  # score is in correct order
+
                 for i in finished:
                     b = batch_offset[i]
                     for n in range(n_best):
