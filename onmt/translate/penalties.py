@@ -63,7 +63,7 @@ class PenaltyBuilder(object):
         "Google's Neural Machine Translation System" :cite:`wu2016google`.
         """
 
-        modifier = (((5 + len(beam.next_ys)) ** alpha) /
+        modifier = (((5 + len(beam.next_ys) - 1) ** alpha) /
                     ((5 + 1) ** alpha))
         return (logprobs / modifier)
 
