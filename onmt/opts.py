@@ -112,6 +112,8 @@ def model_opts(parser):
                        help='Number of heads for transformer self-attention')
     group.add_argument('-transformer_ff', type=int, default=2048,
                        help='Size of hidden transformer feed-forward')
+    group.add_argument('-intra_temporal', action="store_true",
+                       help="Intra-temporal reweighting")
 
     # Genenerator and loss options.
     group.add_argument('-copy_attn', action="store_true",

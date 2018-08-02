@@ -121,7 +121,8 @@ def build_decoder(opt, embeddings):
                              opt.copy_attn,
                              opt.dropout,
                              embeddings,
-                             opt.reuse_copy_attn)
+                             opt.reuse_copy_attn,
+                             opt.intra_temporal)
 
 
 def load_test_model(opt, dummy_opt):

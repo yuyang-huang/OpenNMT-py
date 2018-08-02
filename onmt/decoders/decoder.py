@@ -60,7 +60,7 @@ class RNNDecoderBase(nn.Module):
                  hidden_size, attn_type="general",
                  coverage_attn=False, context_gate=None,
                  copy_attn=False, dropout=0.0, embeddings=None,
-                 reuse_copy_attn=False):
+                 reuse_copy_attn=False, intra_temporal=False):
         super(RNNDecoderBase, self).__init__()
 
         # Basic attributes.
@@ -102,6 +102,7 @@ class RNNDecoderBase(nn.Module):
         if copy_attn:
             self._copy = True
         self._reuse_copy_attn = reuse_copy_attn
+        self._intra_temporal = intra_temporal
 
     def forward(self, tgt, memory_bank, state, memory_lengths=None,
                 step=None):
@@ -236,7 +237,8 @@ class StdRNNDecoder(RNNDecoderBase):
         decoder_outputs, p_attn = self.attn(
             rnn_output.transpose(0, 1).contiguous(),
             memory_bank.transpose(0, 1),
-            memory_lengths=memory_lengths
+            memory_lengths=memory_lengths,
+            intra_temporal=self._intra_temporal,
         )
         attns["std"] = p_attn
         if self._copy:

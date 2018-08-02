@@ -132,7 +132,8 @@ class GlobalAttention(nn.Module):
 
             return self.v(wquh.view(-1, dim)).view(tgt_batch, tgt_len, src_len)
 
-    def forward(self, source, memory_bank, memory_lengths=None, coverage=None):
+    def forward(self, source, memory_bank, memory_lengths=None, coverage=None,
+                intra_temporal=False):
         """
 
         Args:
@@ -174,13 +175,32 @@ class GlobalAttention(nn.Module):
         # compute attention scores, as in Luong et al.
         align = self.score(source, memory_bank)
 
-        if memory_lengths is not None:
-            mask = sequence_mask(memory_lengths, max_len=align.size(-1))
-            mask = mask.unsqueeze(1)  # Make it broadcastable.
-            align.masked_fill_(1 - mask, -float('inf'))
-
         # Softmax to normalize attention weights
-        align_vectors = self.softmax(align.view(batch*target_l, source_l))
+        if intra_temporal:
+            align = align.exp()
+
+            # Do not penalize the first time step
+            normalize_term = torch.cat([
+                torch.ones_like(align[:, 0, :].unsqueeze(1)),
+                align.cumsum(1)[:, :-1, :],
+            ], 1)
+            align = align / normalize_term
+
+            # Handle padding
+            if memory_lengths is not None:
+                mask = sequence_mask(memory_lengths, max_len=align.size(-1))
+                mask = mask.unsqueeze(1)  # Make it broadcastable.
+                align.masked_fill_(1 - mask, 0)
+
+            # Softmax
+            align = align / align.sum(-1, keepdim=True)
+            align_vectors = align.view(batch * target_l, source_l)
+        else:
+            if memory_lengths is not None:
+                mask = sequence_mask(memory_lengths, max_len=align.size(-1))
+                mask = mask.unsqueeze(1)  # Make it broadcastable.
+                align.masked_fill_(1 - mask, -float('inf'))
+            align_vectors = self.softmax(align.view(batch*target_l, source_l))
         align_vectors = align_vectors.view(batch, target_l, source_l)
 
         # each context vector c_t is the weighted average
