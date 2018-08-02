@@ -9,6 +9,7 @@ import math
 import torch
 
 from itertools import count
+from tqdm import tqdm
 from onmt.utils.misc import tile
 
 import onmt.model_builder
@@ -212,7 +213,7 @@ class Translator(object):
         all_scores = []
         all_predictions = []
 
-        for batch in data_iter:
+        for batch in tqdm(data_iter):
             batch_data = self.translate_batch(batch, data, fast=self.fast)
             translations = builder.from_batch(batch_data)
 
