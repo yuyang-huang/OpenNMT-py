@@ -374,10 +374,14 @@ class Translator(object):
             torch.tensor([0.0] + [float("-inf")] * (beam_size - 1),
                          device=memory_bank.device).repeat(batch_size))
 
+        best_completed_scores = torch.full((batch_size,), float('-inf'), device=memory_bank.device)
+        tgt_lengths = batch.tgt[1].float()
+        alpha = self.global_scorer.alpha
+
         results = {}
-        results["predictions"] = [[] for _ in range(batch_size)]  # noqa: F812
-        results["scores"] = [[] for _ in range(batch_size)]  # noqa: F812
-        results["attention"] = [[] for _ in range(batch_size)]  # noqa: F812
+        results["predictions"] = [[0] for _ in range(batch_size)]  # noqa: F812
+        results["scores"] = [[0] for _ in range(batch_size)]  # noqa: F812
+        results["attention"] = [[[]] for _ in range(batch_size)]  # noqa: F812
         results["gold_score"] = [0] * batch_size
         results["batch"] = batch
 
@@ -465,11 +469,6 @@ class Translator(object):
                 coverage_penalty = beta * (coverage_penalty.sum(1) - memory_lengths.float())
                 log_probs -= coverage_penalty.unsqueeze(1)
 
-            # Length penalty
-            alpha = self.global_scorer.alpha
-            length_penalty = ((5.0 + (step + 1)) / 6.0) ** alpha
-            log_probs /= length_penalty
-
             # Flatten probs into a list of possibilities.
             log_probs = log_probs.reshape(-1, beam_size * vocab_size)
             topk_scores, topk_ids = log_probs.topk(beam_size, dim=-1)
@@ -484,13 +483,14 @@ class Translator(object):
                 + beam_offset[:topk_beam_index.size(0)].unsqueeze(1))
 
             # Recover log probs.
-            topk_log_probs = topk_scores * length_penalty
             if alive_attn is not None:
                 select_indices = batch_index.view(-1)
                 coverage_penalty = (coverage_penalty
                                     .index_select(0, select_indices)
                                     .view(batch_size, beam_size))
-                topk_log_probs += coverage_penalty
+                topk_log_probs = topk_scores + coverage_penalty
+            else:
+                topk_log_probs = topk_scores
 
             # Allow partial sentence if reached `max_length`
             if step + 1 == max_length:
@@ -517,22 +517,24 @@ class Translator(object):
 
                 for n in range(num_finished):
                     i, j = finished_indices[n].tolist()
-                    b = batch_offset[i]
-                    results["predictions"][b].append(predictions[i, j, 1:])
-                    results["scores"][b].append(scores[i, j])
-                    if not return_attention:
-                        results["attention"][b].append([])
-                    else:
-                        results["attention"][b].append(
-                            attention[:, i, j, :memory_lengths[i]])
+                    score = scores[i, j] + alpha * min(tgt_lengths[i], step + 1)
+                    if score > best_completed_scores[i]:
+                        best_completed_scores[i] = score
 
-            # If all batches are finished, no need to go further.
-            non_finished = finished.sum(-1).lt(beam_size).nonzero().view(-1)
-            if len(non_finished) == 0:
+                        b = batch_offset[i]
+                        results["predictions"][b][0] = predictions[i, j, 1:]
+                        results["scores"][b][0] = scores[i, j]
+                        if return_attention:
+                            results["attention"][b][0] = attention[:, i, j, :memory_lengths[i]]
+
+            # Stopping criterion: optimal beam search for bounded length reward
+            criterion = (topk_scores[:, 0] + alpha * tgt_lengths).le(best_completed_scores)
+            non_finished = criterion.eq(0).nonzero().view(-1)
+            batch_size = len(non_finished)
+            if batch_size == 0:
                 break
 
             # Remove finished batches for the next step.
-            batch_size = len(non_finished)
             topk_log_probs = topk_log_probs.index_select(0, non_finished)
             topk_ids = topk_ids.index_select(0, non_finished)
             batch_index = batch_index.index_select(0, non_finished)
@@ -540,6 +542,8 @@ class Translator(object):
             src_map = src_map.index_select(1, non_finished)
             src_indices = src_indices.index_select(0, non_finished)
             src_mask = src_mask.index_select(0, non_finished)
+            tgt_lengths = tgt_lengths.index_select(0, non_finished)
+            best_completed_scores = best_completed_scores.index_select(0, non_finished)
 
             # Select and reorder inputs to the next step
             select_indices = batch_index.view(-1)
