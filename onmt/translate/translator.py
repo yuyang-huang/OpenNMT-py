@@ -492,8 +492,13 @@ class Translator(object):
                                     .view(batch_size, beam_size))
                 topk_log_probs += coverage_penalty
 
+            # Allow partial sentence if reached `max_length`
+            if step + 1 == max_length:
+                finished = torch.ones_like(topk_ids)
+            else:
+                finished = topk_ids.eq(end_token)
+
             # Save result of finished sentences.
-            finished = topk_ids.eq(end_token)
             finished_indices = finished.nonzero()
             num_finished = len(finished_indices)
             if num_finished > 0:
@@ -520,10 +525,6 @@ class Translator(object):
                     else:
                         results["attention"][b].append(
                             attention[:, i, j, :memory_lengths[i]])
-
-            # Prune sentences with length over `max_length`
-            if step + 1 == max_length:
-                break
 
             # If all batches are finished, no need to go further.
             non_finished = finished.sum(-1).lt(beam_size).nonzero().view(-1)
@@ -562,9 +563,6 @@ class Translator(object):
         # Sort the extracted full hypotheses according to score
         for b in range(batch.batch_size):
             scores = results["scores"][b]
-            if not scores:
-                raise RuntimeError('No hypothesis can be found. Try increase `max_length`.')
-
             sorting_indices = sorted(range(len(scores)), key=scores.__getitem__, reverse=True)
             for key in ('predictions', 'scores', 'attention'):
                 results[key][b] = [results[key][b][i] for i in sorting_indices]
