@@ -245,17 +245,17 @@ class Translator(object):
                     preds = trans.pred_sents[0]
                     preds.append('</s>')
                     attns = trans.attns[0].tolist()
-                    header_format = "{:>10.10} " + "{:>10.7} " * len(srcs)
-                    row_format = "{:>10.10} " + "{:>10.7f} " * len(srcs)
+                    header_format = "{}" + "|||{}" * len(srcs)
+                    row_format = "{}" + "|||{:.7f}" * len(srcs)
                     output = header_format.format("", *trans.src_raw) + '\n'
                     for word, row in zip(preds, attns):
                         max_index = row.index(max(row))
                         row_format = row_format.replace(
-                            "{:>10.7f} ", "{:*>10.7f} ", max_index + 1)
+                            "|||{:.7f}", "|||*{:.7f}", max_index + 1)
                         row_format = row_format.replace(
-                            "{:*>10.7f} ", "{:>10.7f} ", max_index)
+                            "|||*{:.7f}", "|||{:.7f}", max_index)
                         output += row_format.format(word, *row) + '\n'
-                        row_format = "{:>10.10} " + "{:>10.7f} " * len(srcs)
+                        row_format = "{}" + "|||{:.7f}" * len(srcs)
                     os.write(1, output.encode('utf-8'))
 
         if self.report_score:
