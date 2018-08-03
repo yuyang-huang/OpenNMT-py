@@ -378,7 +378,7 @@ class Translator(object):
         results["predictions"] = [[] for _ in range(batch_size)]  # noqa: F812
         results["scores"] = [[] for _ in range(batch_size)]  # noqa: F812
         results["attention"] = [[] for _ in range(batch_size)]  # noqa: F812
-        results["gold_score"] = [0] * batch_size
+        results["gold_score"] = self._run_target(batch, data)
         results["batch"] = batch
 
         max_length += 1
@@ -703,6 +703,9 @@ class Translator(object):
         src = inputters.make_features(batch, 'src', data_type)
         tgt_in = inputters.make_features(batch, 'tgt')[:-1]
 
+        vocab = self.fields["tgt"].vocab
+        index = batch.indices.data
+
         #  (1) run the encoder on the src
         enc_states, memory_bank = self.model.encoder(src, src_lengths)
         dec_states = \
@@ -712,13 +715,29 @@ class Translator(object):
         #  (i.e. log likelihood) of the target under the model
         tt = torch.cuda if self.cuda else torch
         gold_scores = tt.FloatTensor(batch.batch_size).fill_(0)
-        dec_out, _, _ = self.model.decoder(
+        dec_out, _, attn = self.model.decoder(
             tgt_in, memory_bank, dec_states, memory_lengths=src_lengths)
 
+        # default for models without copy
+        copy_attn = attn.get('copy', [[0]] * len(dec_out))
+
         tgt_pad = self.fields["tgt"].vocab.stoi[inputters.PAD_WORD]
-        for dec, tgt in zip(dec_out, batch.tgt[1:].data):
+        for dec, tgt, copy_prob in zip(dec_out, batch.tgt[1:].data, copy_attn):
             # Log prob of each word.
-            out = self.model.generator.forward(dec)
+            if self.copy_attn:
+                out = self.model.generator.forward(
+                    dec,
+                    copy_prob,
+                    batch.src_map)
+                vocab_size = len(vocab)
+                probs = inputters.TextDataset.collapse_copy_scores(
+                    out.unsqueeze(0),
+                    index,
+                    vocab,
+                    data.src_vocabs)
+                out = probs.narrow(-1, 0, vocab_size).view(-1, vocab_size).log()
+            else:
+                out = self.model.generator.forward(dec)
             tgt = tgt.unsqueeze(1)
             scores = out.data.gather(1, tgt)
             scores.masked_fill_(tgt.eq(tgt_pad), 0)
