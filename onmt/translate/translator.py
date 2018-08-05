@@ -10,8 +10,9 @@ import torch
 
 from itertools import count
 from tqdm import tqdm
-from onmt.utils.misc import tile
 
+from onmt.utils.misc import tile
+from onmt.modules import SharedVocabCopyGenerator
 import onmt.model_builder
 import onmt.translate.beam
 import onmt.inputters as inputters
@@ -403,19 +404,26 @@ class Translator(object):
 
             # Generator forward.
             if self.copy_attn:
-                out = self.model.generator.forward(
-                    _reorder(dec_out, batch_size, beam_size),
-                    _reorder(attn['copy'].squeeze(0), batch_size, beam_size),
-                    src_map)
                 vocab_size = len(vocab)
-                probs = inputters.TextDataset.collapse_copy_scores(
-                    out.data.view(beam_size, batch_size, -1),
-                    src_indices,
-                    vocab,
-                    data.src_vocabs)
-                log_probs = _reorder(
-                    probs.narrow(-1, 0, vocab_size).view(-1, vocab_size).log(),
-                    beam_size, batch_size)
+                if isinstance(self.model.generator, SharedVocabCopyGenerator):
+                    out = self.model.generator.forward(
+                        _reorder(dec_out, batch_size, beam_size),
+                        _reorder(attn['copy'].squeeze(0), batch_size, beam_size),
+                        src)
+                    log_probs = _reorder(out.log(), beam_size, batch_size)
+                else:
+                    out = self.model.generator.forward(
+                        _reorder(dec_out, batch_size, beam_size),
+                        _reorder(attn['copy'].squeeze(0), batch_size, beam_size),
+                        src_map)
+                    probs = inputters.TextDataset.collapse_copy_scores(
+                        out.data.view(beam_size, batch_size, -1),
+                        src_indices,
+                        vocab,
+                        data.src_vocabs)
+                    log_probs = _reorder(
+                        probs.narrow(-1, 0, vocab_size).view(-1, vocab_size).log(),
+                        beam_size, batch_size)
             else:
                 log_probs = self.model.generator.forward(dec_out)
                 vocab_size = log_probs.size(-1)
@@ -524,6 +532,7 @@ class Translator(object):
             topk_ids = topk_ids.index_select(0, non_finished)
             batch_index = batch_index.index_select(0, non_finished)
             batch_offset = batch_offset.index_select(0, non_finished)
+            src = src.index_select(1, non_finished)
             src_map = src_map.index_select(1, non_finished)
             src_indices = src_indices.index_select(0, non_finished)
             src_mask = src_mask.index_select(0, non_finished)
@@ -651,13 +660,19 @@ class Translator(object):
                 # beam x tgt_vocab
                 beam_attn = unbottle(attn["std"])
             else:
-                out = self.model.generator.forward(dec_out,
-                                                   attn["copy"].squeeze(0),
-                                                   src_map)
-                # beam x (tgt_vocab + extra_vocab)
-                out = data.collapse_copy_scores(
-                    unbottle(out.data),
-                    batch.indices, self.fields["tgt"].vocab, data.src_vocabs)
+                if isinstance(self.model.generator, SharedVocabCopyGenerator):
+                    out = self.model.generator.forward(dec_out,
+                                                       attn["copy"].squeeze(0),
+                                                       src)
+                    out = unbottle(out)
+                else:
+                    out = self.model.generator.forward(dec_out,
+                                                       attn["copy"].squeeze(0),
+                                                       src_map)
+                    # beam x (tgt_vocab + extra_vocab)
+                    out = data.collapse_copy_scores(
+                        unbottle(out.data),
+                        batch.indices, self.fields["tgt"].vocab, data.src_vocabs)
                 # beam x tgt_vocab
                 out = out.log()
                 beam_attn = unbottle(attn["copy"])
@@ -725,17 +740,20 @@ class Translator(object):
         for dec, tgt, copy_prob in zip(dec_out, batch.tgt[1:].data, copy_attn):
             # Log prob of each word.
             if self.copy_attn:
-                out = self.model.generator.forward(
-                    dec,
-                    copy_prob,
-                    batch.src_map)
-                vocab_size = len(vocab)
-                probs = inputters.TextDataset.collapse_copy_scores(
-                    out.unsqueeze(0),
-                    index,
-                    vocab,
-                    data.src_vocabs)
-                out = probs.narrow(-1, 0, vocab_size).view(-1, vocab_size).log()
+                if isinstance(self.model.generator, SharedVocabCopyGenerator):
+                    out = self.model.generator.forward(dec, copy_prob, src).log()
+                else:
+                    out = self.model.generator.forward(
+                        dec,
+                        copy_prob,
+                        batch.src_map)
+                    vocab_size = len(vocab)
+                    probs = inputters.TextDataset.collapse_copy_scores(
+                        out.unsqueeze(0),
+                        index,
+                        vocab,
+                        data.src_vocabs)
+                    out = probs.narrow(-1, 0, vocab_size).view(-1, vocab_size).log()
             else:
                 out = self.model.generator.forward(dec)
             tgt = tgt.unsqueeze(1)
