@@ -20,7 +20,7 @@ from onmt.decoders.decoder import InputFeedRNNDecoder, StdRNNDecoder
 from onmt.decoders.transformer import TransformerDecoder
 from onmt.decoders.cnn_decoder import CNNDecoder
 
-from onmt.modules import Embeddings, CopyGenerator
+from onmt.modules import Embeddings, CopyGenerator, SharedVocabCopyGenerator
 from onmt.utils.misc import use_gpu
 from onmt.utils.logging import logger
 
@@ -208,9 +208,15 @@ def build_base_model(model_opt, fields, gpu, checkpoint=None):
             tied_embeddings = decoder.embeddings.word_lut.weight
         else:
             tied_embeddings = None
-        generator = CopyGenerator(model_opt.rnn_size,
-                                  fields["tgt"].vocab,
-                                  tied_embeddings=tied_embeddings)
+        if tied_embeddings is not None and model_opt.share_embeddings:
+            generator = SharedVocabCopyGenerator(
+                model_opt.rnn_size,
+                tied_embeddings,
+                fields["tgt"].vocab.stoi[inputters.PAD_WORD])
+        else:
+            generator = CopyGenerator(model_opt.rnn_size,
+                                      fields["tgt"].vocab,
+                                      tied_embeddings=tied_embeddings)
 
     # Load the model states from checkpoint or initialize them.
     if checkpoint is not None:
