@@ -90,6 +90,8 @@ def model_opts(parser):
                        help="""The gate type to use in the RNNs""")
     # group.add_argument('-residual',   action="store_true",
     #                     help="Add residual connections between RNN layers.")
+    group.add_argument('-readout', type=float, default=0.,
+                       help='Readout probability')
 
     group.add_argument('-brnn', action=DeprecateAction,
                        help="Deprecated, use `encoder_type`.")

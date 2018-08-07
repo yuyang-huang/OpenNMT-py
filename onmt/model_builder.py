@@ -16,7 +16,7 @@ from onmt.encoders.mean_encoder import MeanEncoder
 from onmt.encoders.audio_encoder import AudioEncoder
 from onmt.encoders.image_encoder import ImageEncoder
 
-from onmt.decoders.decoder import InputFeedRNNDecoder, StdRNNDecoder
+from onmt.decoders.decoder import InputFeedRNNDecoder, StdRNNDecoder, ReadoutRNNDecoder
 from onmt.decoders.transformer import TransformerDecoder
 from onmt.decoders.cnn_decoder import CNNDecoder
 
@@ -102,6 +102,17 @@ def build_decoder(opt, embeddings):
                           opt.global_attention, opt.copy_attn,
                           opt.cnn_kernel_width, opt.dropout,
                           embeddings)
+    elif opt.readout > 0.:
+        return ReadoutRNNDecoder(opt.rnn_type, opt.brnn,
+                                 opt.dec_layers, opt.rnn_size,
+                                 opt.global_attention,
+                                 opt.coverage_attn,
+                                 opt.context_gate,
+                                 opt.copy_attn,
+                                 opt.dropout,
+                                 embeddings,
+                                 opt.reuse_copy_attn,
+                                 opt.readout)
     elif opt.input_feed:
         return InputFeedRNNDecoder(opt.rnn_type, opt.brnn,
                                    opt.dec_layers, opt.rnn_size,
@@ -211,8 +222,8 @@ def build_base_model(model_opt, fields, gpu, checkpoint=None):
         if tied_embeddings is not None and model_opt.share_embeddings:
             generator = SharedVocabCopyGenerator(
                 model_opt.rnn_size,
-                tied_embeddings,
-                fields["tgt"].vocab.stoi[inputters.PAD_WORD])
+                fields["tgt"].vocab,
+                tied_embeddings)
         else:
             generator = CopyGenerator(model_opt.rnn_size,
                                       fields["tgt"].vocab,
@@ -242,6 +253,11 @@ def build_base_model(model_opt, fields, gpu, checkpoint=None):
         if hasattr(model.decoder, 'embeddings'):
             model.decoder.embeddings.load_pretrained_vectors(
                 model_opt.pre_word_vecs_dec, model_opt.fix_word_vecs_dec)
+
+    # Special case: readout decoder needs generator to work
+    if model_opt.readout > 0:
+        assert isinstance(generator, SharedVocabCopyGenerator)
+        decoder.generator_forward = generator.forward
 
     # Add generator to model (this registers it as parameter of model).
     model.generator = generator

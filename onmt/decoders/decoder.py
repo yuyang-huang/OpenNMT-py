@@ -60,7 +60,7 @@ class RNNDecoderBase(nn.Module):
                  hidden_size, attn_type="general",
                  coverage_attn=False, context_gate=None,
                  copy_attn=False, dropout=0.0, embeddings=None,
-                 reuse_copy_attn=False):
+                 reuse_copy_attn=False, readout=0.):
         super(RNNDecoderBase, self).__init__()
 
         # Basic attributes.
@@ -70,6 +70,7 @@ class RNNDecoderBase(nn.Module):
         self.hidden_size = hidden_size
         self.embeddings = embeddings
         self.dropout = nn.Dropout(dropout)
+        self.readout = readout
 
         # Build the RNN.
         self.rnn = self._build_rnn(rnn_type,
@@ -104,7 +105,7 @@ class RNNDecoderBase(nn.Module):
         self._reuse_copy_attn = reuse_copy_attn
 
     def forward(self, tgt, memory_bank, state, memory_lengths=None,
-                step=None):
+                step=None, src=None):
         """
         Args:
             tgt (`LongTensor`): sequences of padded tokens
@@ -133,7 +134,7 @@ class RNNDecoderBase(nn.Module):
 
         # Run the forward pass of the RNN.
         decoder_final, decoder_outputs, attns = self._run_forward_pass(
-            tgt, memory_bank, state, memory_lengths=memory_lengths)
+            tgt, memory_bank, state, memory_lengths=memory_lengths, src=src)
 
         # Update the state with the result.
         final_output = decoder_outputs[-1]
@@ -192,7 +193,7 @@ class StdRNNDecoder(RNNDecoderBase):
     or `copy_attn` support.
     """
 
-    def _run_forward_pass(self, tgt, memory_bank, state, memory_lengths=None):
+    def _run_forward_pass(self, tgt, memory_bank, state, memory_lengths=None, src=None):
         """
         Private helper for running the specific RNN forward pass.
         Must be overriden by all subclasses.
@@ -294,7 +295,7 @@ class InputFeedRNNDecoder(RNNDecoderBase):
           G --> H
     """
 
-    def _run_forward_pass(self, tgt, memory_bank, state, memory_lengths=None):
+    def _run_forward_pass(self, tgt, memory_bank, state, memory_lengths=None, src=None):
         """
         See StdRNNDecoder._run_forward_pass() for description
         of arguments and return values.
@@ -458,3 +459,75 @@ class RNNDecoderState(DecoderState):
     def map_batch_fn(self, fn):
         self.hidden = tuple(map(lambda x: fn(x, 1), self.hidden))
         self.input_feed = fn(self.input_feed, 1)
+
+
+class ReadoutRNNDecoder(RNNDecoderBase):
+    def _run_forward_pass(self, tgt, memory_bank, state, memory_lengths=None, src=None):
+        # Additional args check.
+        input_feed = state.input_feed.squeeze(0)
+        input_feed_batch, _ = input_feed.size()
+        _, tgt_batch, _ = tgt.size()
+        aeq(tgt_batch, input_feed_batch)
+        # END Additional args check.
+
+        # Initialize local and return variables.
+        decoder_outputs = []
+        attns = {"std": []}
+        if self._copy:
+            attns["copy"] = []
+        attns['coverage'] = []
+
+        hidden = state.hidden
+        pred_word = state.coverage  # XXX: hack coverage to hold the previous word
+
+        # Input feed concatenates hidden state with
+        # input at every time step.
+        for tgt_t in tgt.split(1):
+            # Read previous predicted word with probability `self.readout`
+            if pred_word is not None and self.training:
+                readout_mask = torch.rand_like(pred_word, dtype=torch.float).lt(self.readout)
+                word_t = torch.where(readout_mask, pred_word, tgt_t)
+            else:
+                word_t = tgt_t
+
+            emb_t = self.embeddings(word_t).squeeze(0)
+            decoder_input = torch.cat([emb_t, input_feed], 1)
+
+            rnn_output, hidden = self.rnn(decoder_input, hidden)
+            decoder_output, p_attn = self.attn(
+                rnn_output,
+                memory_bank.transpose(0, 1),
+                memory_lengths=memory_lengths)
+            decoder_output = self.dropout(decoder_output)
+            input_feed = decoder_output
+
+            # Run the forward pass of the generator
+            with torch.no_grad():
+                probs = self.generator_forward(decoder_output, p_attn, src)
+            pred_word = probs.argmax(-1, keepdim=True)
+            attns['coverage'].append(pred_word)
+
+            decoder_outputs += [decoder_output]
+            attns["std"] += [p_attn]
+            attns["copy"] = attns["std"]
+
+        # Return result.
+        return hidden, decoder_outputs, attns
+
+    def _build_rnn(self, rnn_type, input_size,
+                   hidden_size, num_layers, dropout):
+        assert not rnn_type == "SRU", "SRU doesn't support input feed! " \
+            "Please set -input_feed 0!"
+        if rnn_type == "LSTM":
+            stacked_cell = onmt.models.stacked_rnn.StackedLSTM
+        else:
+            stacked_cell = onmt.models.stacked_rnn.StackedGRU
+        return stacked_cell(num_layers, input_size,
+                            hidden_size, dropout)
+
+    @property
+    def _input_size(self):
+        """
+        Using input feed by concatenating input with attention vectors.
+        """
+        return self.embeddings.embedding_size + self.hidden_size

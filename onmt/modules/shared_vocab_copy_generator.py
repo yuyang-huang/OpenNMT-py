@@ -11,11 +11,12 @@ from onmt.modules.embeddings import TiedEmbeddingLinear
 class SharedVocabCopyGenerator(nn.Module):
     """Copy generator with shared vocabulary (faster code path).
     """
-    def __init__(self, input_size, tied_embeddings, pad_word):
-        self.pad_word = pad_word
+    def __init__(self, input_size, tgt_dict, tied_embeddings):
         super().__init__()
         self.linear = TiedEmbeddingLinear(input_size, tied_embeddings)
         self.linear_copy = nn.Linear(input_size, 1)
+        self.tgt_dict = tgt_dict
+        self.pad_word = tgt_dict.stoi[inputters.PAD_WORD]
         self.softmax = nn.Softmax(dim=1)
         self.sigmoid = nn.Sigmoid()
 

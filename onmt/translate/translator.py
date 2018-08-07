@@ -399,7 +399,8 @@ class Translator(object):
                 memory_bank,
                 dec_states,
                 memory_lengths=memory_lengths,
-                step=step)
+                step=step,
+                src=src)
             dec_out = dec_out.squeeze(0)
 
             # Generator forward.
@@ -647,7 +648,7 @@ class Translator(object):
             dec_out, dec_states, attn = self.model.decoder(
                 inp, memory_bank, dec_states,
                 memory_lengths=memory_lengths,
-                step=i)
+                step=i, src=src)
 
             dec_out = dec_out.squeeze(0)
 
@@ -731,7 +732,7 @@ class Translator(object):
         tt = torch.cuda if self.cuda else torch
         gold_scores = tt.FloatTensor(batch.batch_size).fill_(0)
         dec_out, _, attn = self.model.decoder(
-            tgt_in, memory_bank, dec_states, memory_lengths=src_lengths)
+            tgt_in, memory_bank, dec_states, memory_lengths=src_lengths, src=src)
 
         # default for models without copy
         copy_attn = attn.get('copy', [[0]] * len(dec_out))
