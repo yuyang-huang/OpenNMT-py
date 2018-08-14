@@ -47,6 +47,12 @@ def tile(x, count, dim=0):
     return x
 
 
+def repeat(x, count, dim):
+    sizes = [1] * x.dim()
+    sizes[dim] = count
+    return x.repeat(*sizes)
+
+
 def use_gpu(opt):
     """
     Creates a boolean if gpu used

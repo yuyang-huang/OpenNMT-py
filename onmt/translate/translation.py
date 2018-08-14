@@ -88,7 +88,7 @@ class TranslationBuilder(object):
                 src[:, b] if src is not None else None,
                 src_vocab, src_raw,
                 preds[b][n], attn[b][n])
-                for n in range(self.n_best)]
+                for n in range(min(self.n_best, len(preds[b])))]
             gold_sent = None
             if tgt is not None:
                 gold_sent = self._build_target_tokens(

@@ -20,6 +20,7 @@ def main(opt):
     translator = build_translator(opt, report_score=True, logger=logger)
     translator.translate(src_path=opt.src,
                          tgt_path=opt.tgt,
+                         cluster_path=opt.cluster,
                          src_dir=opt.src_dir,
                          batch_size=opt.batch_size,
                          attn_debug=opt.attn_debug)

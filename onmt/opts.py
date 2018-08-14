@@ -443,6 +443,14 @@ def translate_opts(parser):
                        help="""Report rouge 1/2/3/L/SU4 score after translation
                        call tools/test_rouge.py on command line""")
 
+    group = parser.add_argument_group('Cluster')
+    group.add_argument('-cluster',
+                       help='Cluster file (optional)')
+    group.add_argument('-resample_size', type=int,
+                       help='Size of each subsample for mixture LM (optional)')
+    group.add_argument('-seed', type=int, default=1126,
+                       help="Random seed")
+
     # Options most relevant to summarization.
     group.add_argument('-dynamic_dict', action='store_true',
                        help="Create dynamic dictionaries")
@@ -461,6 +469,8 @@ def translate_opts(parser):
                        help='Maximum prediction length.')
     group.add_argument('-max_sent_length', action=DeprecateAction,
                        help="Deprecated, use `-max_length` instead")
+    group.add_argument('-pruning', type=float, default=4.0,
+                       help="Early pruning if best beam score is this far from current best.")
 
     # Alpha and Beta values for Google Length + Coverage penalty
     # Described here: https://arxiv.org/pdf/1609.08144.pdf, Section 7

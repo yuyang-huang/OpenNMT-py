@@ -5,18 +5,23 @@ import argparse
 import codecs
 import os
 import math
+from copy import deepcopy
 
 import torch
+import torch.nn.functional as F
 
 from itertools import count
-from tqdm import tqdm
 
-from onmt.utils.misc import tile
+from onmt.utils.misc import tile, repeat
 from onmt.modules import SharedVocabCopyGenerator
 import onmt.model_builder
 import onmt.translate.beam
 import onmt.inputters as inputters
 import onmt.opts as opts
+
+
+class NoValidTranslationError(RuntimeError):
+    pass
 
 
 def build_translator(opt, report_score=True, logger=None, out_file=None):
@@ -42,7 +47,8 @@ def build_translator(opt, report_score=True, logger=None, out_file=None):
               for k in ["beam_size", "n_best", "max_length", "min_length",
                         "stepwise_penalty", "block_ngram_repeat", "src_seq_length_trunc",
                         "ignore_when_blocking", "dump_beam", "report_bleu", "report_rouge",
-                        "data_type", "replace_unk", "gpu", "verbose", "fast"]}
+                        "data_type", "replace_unk", "gpu", "verbose", "fast",
+                        "pruning", "resample_size", "seed"]}
 
     translator = Translator(model, fields, global_scorer=scorer,
                             out_file=out_file, report_score=report_score,
@@ -99,7 +105,10 @@ class Translator(object):
                  verbose=False,
                  out_file=None,
                  fast=False,
-                 src_seq_length_trunc=0):
+                 src_seq_length_trunc=0,
+                 resample_size=5,
+                 seed=-1,
+                 pruning=4.0):
         self.logger = logger
         self.gpu = gpu
         self.cuda = gpu > -1
@@ -130,6 +139,9 @@ class Translator(object):
         self.report_rouge = report_rouge
         self.fast = fast
         self.src_seq_length_trunc = src_seq_length_trunc
+        self.resample_size = resample_size
+        self.seed = seed
+        self.pruning = pruning
 
         # for debugging
         self.beam_trace = self.dump_beam != ""
@@ -146,6 +158,7 @@ class Translator(object):
                   src_data_iter=None,
                   tgt_path=None,
                   tgt_data_iter=None,
+                  cluster_path=None,
                   src_dir=None,
                   batch_size=None,
                   attn_debug=False):
@@ -184,6 +197,7 @@ class Translator(object):
                                        src_data_iter=src_data_iter,
                                        tgt_path=tgt_path,
                                        tgt_data_iter=tgt_data_iter,
+                                       cluster_path=cluster_path,
                                        src_dir=src_dir,
                                        src_seq_length_trunc=self.src_seq_length_trunc,
                                        sample_rate=self.sample_rate,
@@ -229,8 +243,22 @@ class Translator(object):
         all_scores = []
         all_predictions = []
 
-        for batch in tqdm(data_iter):
-            batch_data = self.translate_batch(batch, data, fast=self.fast)
+        for batch in data_iter:
+            if self.data_type == 'cluster':
+                cluster = batch.cluster[0].item()
+                if cluster == -1:
+                    continue
+                self.logger.info('Predicting cluster %d', cluster)
+                self.out_file.write('cluster={:d}\n'.format(cluster))
+                self.out_file.flush()
+
+            try:
+                batch_data = self.translate_batch(batch, data, fast=self.fast)
+            except NoValidTranslationError:
+                self.logger.warning('Cluster %d has no valid translation, skip it.', cluster)
+                self.out_file.write('\n')
+                self.out_file.flush()
+                continue
             translations = builder.from_batch(batch_data)
 
             for trans in translations:
@@ -273,6 +301,10 @@ class Translator(object):
                         output += row_format.format(word, *row) + '\n'
                         row_format = "{}" + "|||{:.7f}" * len(srcs)
                     os.write(1, output.encode('utf-8'))
+
+                # Same sentences for same cluster
+                if self.data_type == 'cluster':
+                    break
 
         if self.report_score:
             msg = self._report_score('PRED', pred_score_total,
@@ -322,7 +354,13 @@ class Translator(object):
            Shouldn't need the original dataset.
         """
         with torch.no_grad():
-            if fast:
+            if hasattr(batch, 'cluster'):
+                return self._translate_cluster(
+                    batch,
+                    data,
+                    self.max_length,
+                    min_length=self.min_length)
+            elif fast:
                 return self._fast_translate_batch(
                     batch,
                     data,
@@ -726,7 +764,7 @@ class Translator(object):
 
     def _run_target(self, batch, data):
         data_type = data.data_type
-        if data_type == 'text':
+        if data_type in ('text', 'cluster'):
             _, src_lengths = batch.src
         else:
             src_lengths = None
@@ -808,3 +846,244 @@ class Translator(object):
             stdin=self.out_file).decode("utf-8")
         msg = res.strip()
         return msg
+
+    def _translate_cluster(self,
+                           batch,
+                           data,
+                           max_length,
+                           min_length=0):
+        assert data.data_type == 'cluster'
+        assert self.global_scorer.beta == 0
+        assert not self.dump_beam
+        assert not self.use_filter_pred
+        assert self.copy_attn
+        assert isinstance(self.model.generator, SharedVocabCopyGenerator)
+
+        if self.seed > 0:
+            torch.manual_seed(self.seed)
+            torch.cuda.manual_seed(self.seed)
+
+        vocab = self.fields['src'].vocab  # vocab is assumed to be shared
+        start_token = vocab.stoi[inputters.BOS_WORD]
+        end_token = vocab.stoi[inputters.EOS_WORD]
+
+        # Model inputs
+        src = inputters.make_features(batch, 'src', data.data_type)
+        _, src_lengths = batch.src
+        mixture_weights = batch.prob
+
+        # Resample the batch to a fixed new batch size [batch_size * resample_size]
+        # Here we assume examples in the same batch are of the same cluster
+        cluster_size = batch.batch_size
+        beam_size = self.beam_size
+        batch_size = self.n_best // beam_size
+        resample_size = self.resample_size
+
+        resample_indices = torch.cat([
+            torch.randperm(cluster_size, device=mixture_weights.device)[:resample_size]
+            for _ in range(batch_size)
+        ])
+        src = src.index_select(1, resample_indices)
+        src_lengths = src_lengths.index_select(0, resample_indices)
+        mixture_weights = mixture_weights.index_select(0, resample_indices)
+
+        # Renormalize mixture weights to sum up to 1
+        mixture_weights = F.softmax(mixture_weights.view(batch_size, resample_size), 1)
+        mixture_weights = mixture_weights.view(1, batch_size, resample_size, 1)
+
+        # Encoder forward.
+        # CuDNN forward requires that the sequences to be sorted according to lengths,
+        # so we mix the `batch_size * resample_size` samples, F-prop, and then
+        # index them back to the original `batch_size * resample_size` order.
+        sorted_src_lengths, indices = torch.sort(src_lengths, descending=True)
+        sorted_src = src.index_select(1, indices)
+        enc_states, memory_bank = self.model.encoder(sorted_src, sorted_src_lengths)
+
+        inv_indices = torch.tensor(
+            [x[0] for x in sorted(enumerate(indices), key=lambda x: x[1])],
+            device=indices.device)
+        enc_states = tuple([state.index_select(1, inv_indices) for state in enc_states])
+        memory_bank = memory_bank.index_select(1, inv_indices)
+        dec_states = self.model.decoder.init_decoder_state(
+            src, memory_bank, enc_states, with_cache=True)
+
+        # Tile states and memory beam_size times.
+        # => [slen, beam_size * batch_size * resample_size, rnn_size]
+        dec_states.map_batch_fn(
+            lambda state, dim: repeat(state, beam_size, dim))
+        memory_bank = repeat(memory_bank, beam_size, 1)
+        memory_lengths = repeat(src_lengths, beam_size, 0)
+
+        device = memory_bank.device
+        batch_offset = torch.arange(batch_size, dtype=torch.long, device=device)
+        beam_offset = torch.arange(batch_size, dtype=torch.long, device=device)
+        resample_offset = torch.arange(resample_size, dtype=torch.long, device=device).unsqueeze(0)
+        alive_seq = torch.full(
+            [beam_size * batch_size, 1],
+            start_token,
+            dtype=torch.long,
+            device=device)
+
+        # Give full probability to the first beam on the first step.
+        topk_log_probs = torch.tensor(
+            [0.0] * batch_size + [float("-inf")] * batch_size * (beam_size - 1),
+            device=device
+        ).view(beam_size, batch_size)
+
+        results = {}
+        results['predictions'] = [[] for _ in range(batch_size)]
+        results['scores'] = [[] for _ in range(batch_size)]
+        results['attention'] = [[] for _ in range(batch_size)]
+        results['gold_score'] = self._run_target(batch, data)
+        results['batch'] = batch
+
+        max_length += 1
+        current_best = torch.full((batch_size,), -1e20, device=device)
+
+        step_batch_size = batch_size  # shrinks as beam search progresses
+        for step in range(max_length):
+            # [beam_size * batch_size] => [beam_size * batch_size * resample_size]
+            # => [1, beam_size * batch_size * resample_size, 1] to match `memory_bank`
+            decoder_input = tile(alive_seq[:, -1:], resample_size, dim=1).view(1, -1, 1)
+
+            # Decoder forward.
+            dec_out, dec_states, attn = self.model.decoder(
+                decoder_input,
+                memory_bank,
+                dec_states,
+                memory_lengths=memory_lengths,
+                step=step)
+            dec_out = dec_out.squeeze(0)  # [beam_size * batch_size * resample_size, rnn_size]
+
+            # Generator forward.
+            vocab_size = len(vocab)
+            out = self.model.generator.forward(dec_out, attn['copy'].squeeze(0), src)
+            log_probs = (out.view(beam_size, step_batch_size, resample_size, vocab_size)
+                         .mul(mixture_weights)
+                         .sum(2)
+                         .log()
+                         .view(beam_size * step_batch_size, vocab_size))
+
+            # Multiply probs by the beam probability.
+            log_probs += topk_log_probs.view(-1, 1)
+            if step < min_length:
+                log_probs[:, end_token] = -1e20
+
+            # Prune the completed hypotheses
+            log_probs = torch.where(alive_seq[:, -1:].ne(end_token),
+                                    log_probs,
+                                    torch.full_like(log_probs, -1e20))
+
+            # Block ngram repeats
+            n = self.block_ngram_repeat
+            if step > n > 0:
+                # Take the trailing n-gram as the target for sliding window matching
+                match_target = alive_seq[:, -n:]
+                for j in range(1, step + 1 - n):
+                    # If `window` matches `match_target`, prune the hypothesis
+                    window = alive_seq[:, j:j + n]
+                    match = (window - match_target).abs().sum(1).eq(0)
+                    log_probs[match] = -1e20
+
+            # Length penalty and transpose for top-K
+            alpha = self.global_scorer.alpha
+            length_penalty = ((5.0 + (step + 1)) / 6.0) ** alpha
+            log_probs = (log_probs
+                         .view(beam_size, step_batch_size, vocab_size)
+                         .transpose(1, 2)
+                         .div(length_penalty)
+                         .view(beam_size * vocab_size, step_batch_size))
+
+            # Get top-K for each element in batch: [beam_size, batch_size]
+            topk_scores, topk_ids = log_probs.topk(beam_size, dim=0)
+
+            # Resolve beam origin and true word ids.
+            topk_beam = (topk_ids.div(vocab_size)
+                         .mul(step_batch_size)
+                         .add(beam_offset[:step_batch_size].unsqueeze(0)))
+            topk_word = topk_ids.fmod(vocab_size)
+
+            # Recover log probs.
+            topk_log_probs = topk_scores * length_penalty
+
+            # Save result of finished sentences.
+            finished = topk_word.eq(end_token).nonzero()
+            if len(finished) > 0:
+                # Reorder before output
+                predictions = (alive_seq
+                               .index_select(0, topk_beam.view(-1))
+                               .view(beam_size, step_batch_size, step + 1))
+                for n in range(len(finished)):
+                    i, j = finished[n].tolist()
+                    b = batch_offset[j]
+
+                    score = topk_scores[i, j]
+                    if score > current_best[j]:
+                        current_best[j] = score
+
+                    results['predictions'][b].append(predictions[i, j, 1:])
+                    results['scores'][b].append(score)
+                    results['attention'][b].append([])
+
+            # Remove finished batches for the next step.
+            all_end_token_batch_indices = topk_word.eq(end_token).sum(0).eq(beam_size)
+            score_too_low_batch_indices = (current_best - topk_scores[0]).gt(self.pruning)
+            alive_batch_indices = (~all_end_token_batch_indices
+                                   & ~score_too_low_batch_indices).nonzero().view(-1)
+            next_batch_size = len(alive_batch_indices)
+            if next_batch_size == 0:
+                break
+
+            topk_log_probs = topk_log_probs.index_select(1, alive_batch_indices)
+            topk_word = topk_word.index_select(1, alive_batch_indices)
+            topk_beam = topk_beam.index_select(1, alive_batch_indices)
+            batch_offset = batch_offset.index_select(0, alive_batch_indices)
+            current_best = current_best.index_select(0, alive_batch_indices)
+            mixture_weights = mixture_weights.index_select(1, alive_batch_indices)
+
+            # Cluster-based variables has an additional `resample_size` axis
+            select_indices = (alive_batch_indices.unsqueeze(1)
+                              .mul(resample_size)
+                              .add(resample_offset)
+                              .view(-1))
+            src = src.index_select(1, select_indices)
+
+            select_indices = (topk_beam.view(-1, 1)
+                              .mul(resample_size)
+                              .add(resample_offset)
+                              .view(-1))
+            memory_bank = memory_bank.index_select(1, select_indices)
+            memory_lengths = memory_lengths.index_select(0, select_indices)
+            dec_states.map_batch_fn(lambda state, dim: state.index_select(dim, select_indices))
+            step_batch_size = next_batch_size
+
+            # Append last prediction.
+            alive_seq = alive_seq.index_select(0, topk_beam.view(-1))
+            alive_seq = torch.cat([alive_seq, topk_word.view(-1, 1)], -1)
+
+        # Sort the extracted full hypotheses according to score
+        filtered_results = {key: [] for key in ('predictions', 'scores', 'attention')}
+        for n in range(batch_size):
+            scores = results['scores'][n]
+            if len(scores) == 0:
+                # no valid prediction until `max_length`, skip it
+                continue
+
+            sort_index = sorted(range(len(scores)), key=scores.__getitem__, reverse=True)
+            for key in ('predictions', 'scores', 'attention'):
+                for index in sort_index[:beam_size]:
+                    filtered_results[key].append(results[key][n][index])
+
+        scores = filtered_results['scores']
+        if len(scores) == 0:
+            raise NoValidTranslationError
+
+        sort_index = sorted(range(len(scores)), key=scores.__getitem__, reverse=True)
+        for key in ('predictions', 'scores', 'attention'):
+            filtered_results[key] = [filtered_results[key][i] for i in sort_index]
+
+        # XXX: replicate to cluster_size
+        for key in ('predictions', 'scores', 'attention'):
+            results[key] = [deepcopy(filtered_results[key]) for _ in range(cluster_size)]
+
+        return results
