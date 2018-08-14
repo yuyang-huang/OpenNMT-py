@@ -8,6 +8,7 @@ import argparse
 import os
 import glob
 import sys
+import shutil
 
 import torch
 
@@ -48,7 +49,7 @@ def parse_args():
 
 
 def build_save_in_shards(src_corpus, tgt_corpus, fields,
-                         corpus_type, opt):
+                         corpus_type, opt, cluster_corpus=None):
     """
     Divide the big corpus into shards, and build dataset separately.
     This is currently only for data_type=='text'.
@@ -96,15 +97,28 @@ def build_save_in_shards(src_corpus, tgt_corpus, fields,
         "tgt", opt.max_shard_size,
         assoc_iter=src_iter)
 
+    if opt.data_type == 'cluster':
+        cluster_iter = inputters.ShardedClusterIterator(
+            cluster_corpus, opt.tgt_seq_length_trunc,
+            "cluster", opt.max_shard_size,
+            assoc_iter=src_iter)
+
     index = 0
     while not src_iter.hit_end():
         index += 1
-        dataset = inputters.TextDataset(
-            fields, src_iter, tgt_iter,
-            src_iter.num_feats, tgt_iter.num_feats,
-            src_seq_length=opt.src_seq_length,
-            tgt_seq_length=opt.tgt_seq_length,
-            dynamic_dict=opt.dynamic_dict)
+        if opt.data_type == 'cluster':
+            dataset = inputters.ClusterDataset(
+                fields, src_iter, tgt_iter, cluster_iter,
+                src_seq_length=opt.src_seq_length,
+                tgt_seq_length=opt.tgt_seq_length,
+                ignore_noise=opt.ignore_noise)
+        else:
+            dataset = inputters.TextDataset(
+                fields, src_iter, tgt_iter,
+                src_iter.num_feats, tgt_iter.num_feats,
+                src_seq_length=opt.src_seq_length,
+                tgt_seq_length=opt.tgt_seq_length,
+                dynamic_dict=opt.dynamic_dict)
 
         # We save fields in vocab.pt separately, so make it empty.
         dataset.fields = []
@@ -127,15 +141,17 @@ def build_save_dataset(corpus_type, fields, opt):
     if corpus_type == 'train':
         src_corpus = opt.train_src
         tgt_corpus = opt.train_tgt
+        cluster_corpus = opt.train_cluster
     else:
         src_corpus = opt.valid_src
         tgt_corpus = opt.valid_tgt
+        cluster_corpus = opt.valid_cluster
 
     # Currently we only do preprocess sharding for corpus: data_type=='text'.
-    if opt.data_type == 'text':
+    if opt.data_type in ('text', 'cluster'):
         return build_save_in_shards(
             src_corpus, tgt_corpus, fields,
-            corpus_type, opt)
+            corpus_type, opt, cluster_corpus=cluster_corpus)
 
     # For data_type == 'img' or 'audio', currently we don't do
     # preprocess sharding. We only build a monolithic dataset.
@@ -168,18 +184,21 @@ def build_save_dataset(corpus_type, fields, opt):
 
 def build_save_vocab(train_dataset, fields, opt):
     """ Building and saving the vocab """
-    fields = inputters.build_vocab(train_dataset, fields, opt.data_type,
-                                   opt.share_vocab,
-                                   opt.src_vocab,
-                                   opt.src_vocab_size,
-                                   opt.src_words_min_frequency,
-                                   opt.tgt_vocab,
-                                   opt.tgt_vocab_size,
-                                   opt.tgt_words_min_frequency)
-
-    # Can't save fields, so remove/reconstruct at training time.
     vocab_file = opt.save_data + '.vocab.pt'
-    torch.save(inputters.save_fields_to_vocab(fields), vocab_file)
+    if opt.fixed_vocab:
+        shutil.copyfile(opt.fixed_vocab, vocab_file)
+    else:
+        fields = inputters.build_vocab(train_dataset, fields, opt.data_type,
+                                       opt.share_vocab,
+                                       opt.src_vocab,
+                                       opt.src_vocab_size,
+                                       opt.src_words_min_frequency,
+                                       opt.tgt_vocab,
+                                       opt.tgt_vocab_size,
+                                       opt.tgt_words_min_frequency)
+
+        # Can't save fields, so remove/reconstruct at training time.
+        torch.save(inputters.save_fields_to_vocab(fields), vocab_file)
 
 
 def main():

@@ -145,6 +145,13 @@ def preprocess_opts(parser):
     group.add_argument('-valid_tgt', required=True,
                        help="Path to the validation target data")
 
+    group.add_argument('-train_cluster',
+                       help="Path to the training cluster data")
+    group.add_argument('-valid_cluster',
+                       help="Path to the validation cluster data")
+    group.add_argument('-ignore_noise', action='store_true', help="Ignore noise in clusters.")
+    group.add_argument('-fixed_vocab', default="", help="Use existing vocabulary.")
+
     group.add_argument('-src_dir', default="",
                        help="Source directory for image or audio files.")
 

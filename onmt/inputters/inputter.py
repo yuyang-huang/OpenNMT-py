@@ -15,6 +15,7 @@ from onmt.inputters.dataset_base import UNK_WORD, PAD_WORD, BOS_WORD, EOS_WORD
 from onmt.inputters.text_dataset import TextDataset
 from onmt.inputters.image_dataset import ImageDataset
 from onmt.inputters.audio_dataset import AudioDataset
+from onmt.inputters.cluster_dataset import ClusterDataset
 from onmt.utils.logging import logger
 
 
@@ -46,6 +47,8 @@ def get_fields(data_type, n_src_features, n_tgt_features):
     """
     if data_type == 'text':
         return TextDataset.get_fields(n_src_features, n_tgt_features)
+    elif data_type == 'cluster':
+        return ClusterDataset.get_fields(n_src_features, n_tgt_features)
     elif data_type == 'img':
         return ImageDataset.get_fields(n_src_features, n_tgt_features)
     elif data_type == 'audio':
@@ -112,7 +115,7 @@ def get_num_features(data_type, corpus_file, side):
     """
     assert side in ["src", "tgt"]
 
-    if data_type == 'text':
+    if data_type in ('text', 'cluster'):
         return TextDataset.get_num_features(corpus_file, side)
     elif data_type == 'img':
         return ImageDataset.get_num_features(corpus_file, side)
@@ -144,7 +147,7 @@ def make_features(batch, side, data_type='text'):
     features = [batch.__dict__[k] for k in keys]
     levels = [data] + features
 
-    if data_type == 'text':
+    if data_type in ('text', 'cluster'):
         return torch.cat([level.unsqueeze(2) for level in levels], 2)
     else:
         return levels[0]
@@ -180,11 +183,12 @@ def collect_feature_vocabs(fields, side):
 
 def build_dataset(fields, data_type, src_data_iter=None, src_path=None,
                   src_dir=None, tgt_data_iter=None, tgt_path=None,
-                  src_seq_length=0, tgt_seq_length=0,
+                  cluster_path=None, src_seq_length=0, tgt_seq_length=0,
                   src_seq_length_trunc=0, tgt_seq_length_trunc=0,
                   dynamic_dict=True, sample_rate=0,
                   window_size=0, window_stride=0, window=None,
-                  normalize_audio=True, use_filter_pred=True):
+                  normalize_audio=True, use_filter_pred=True,
+                  ignore_noise=False):
     """
     Build src/tgt examples iterator from corpus files, also extract
     number of features.
@@ -198,7 +202,7 @@ def build_dataset(fields, data_type, src_data_iter=None, src_path=None,
         on source side for different 'data_type'.
         """
 
-        if data_type == 'text':
+        if data_type in ('text', 'cluster'):
             src_examples_iter, num_src_feats = \
                 TextDataset.make_text_examples_nfeats_tpl(
                     src_data_iter, src_path, src_seq_length_trunc, "src")
@@ -241,6 +245,14 @@ def build_dataset(fields, data_type, src_data_iter=None, src_path=None,
                               tgt_seq_length=tgt_seq_length,
                               dynamic_dict=dynamic_dict,
                               use_filter_pred=use_filter_pred)
+
+    elif data_type == 'cluster':
+        cluster_iter = ClusterDataset.make_text_examples_nfeats_tpl(cluster_path)
+        dataset = ClusterDataset(fields, src_examples_iter, tgt_examples_iter, cluster_iter,
+                                 src_seq_length=src_seq_length,
+                                 tgt_seq_length=tgt_seq_length,
+                                 use_filter_pred=use_filter_pred,
+                                 ignore_noise=ignore_noise)
 
     elif data_type == 'img':
         dataset = ImageDataset(fields, src_examples_iter, tgt_examples_iter,
@@ -326,7 +338,7 @@ def build_vocab(train_dataset_files, fields, data_type, share_vocab,
         logger.info(" * %s vocab size: %d." % (key,
                                                len(fields[key].vocab)))
 
-    if data_type == 'text':
+    if data_type in ('text', 'cluster'):
         _build_field_vocab(fields["src"], counter["src"],
                            max_size=src_vocab_size,
                            min_freq=src_words_min_frequency)
@@ -543,7 +555,7 @@ def _load_fields(dataset, data_type, opt, checkpoint):
     fields = dict([(k, f) for (k, f) in fields.items()
                    if k in dataset.examples[0].__dict__])
 
-    if data_type == 'text':
+    if data_type in ('text', 'cluster'):
         logger.info(' * vocabulary size. source = %d; target = %d' %
                     (len(fields['src'].vocab), len(fields['tgt'].vocab)))
     else:

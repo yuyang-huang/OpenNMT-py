@@ -197,9 +197,24 @@ class Translator(object):
         else:
             cur_device = "cpu"
 
+        if self.data_type == 'cluster':
+            def sort_key(ex):
+                """ Sort using length of source sentences. """
+                # Default to a balanced sort, prioritizing tgt len match.
+                if hasattr(ex, "tgt"):
+                    return ex.cluster, len(ex.src), len(ex.tgt)
+                return ex.cluster, len(ex.src)
+
+            sort = True
+            batch_size_fn = inputters.ClusterDataset.get_batch_size_fn(batch_size)
+        else:
+            sort_key = None
+            sort = False
+            batch_size_fn = None
+
         data_iter = inputters.OrderedIterator(
-            dataset=data, device=cur_device,
-            batch_size=batch_size, train=False, sort=False,
+            dataset=data, device=cur_device, batch_size_fn=batch_size_fn,
+            batch_size=batch_size, train=False, sort=sort, sort_key=sort_key,
             sort_within_batch=True, shuffle=False)
 
         builder = onmt.translate.TranslationBuilder(
