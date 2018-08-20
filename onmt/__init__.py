@@ -8,6 +8,7 @@ import onmt.models
 import onmt.utils
 import onmt.modules
 from onmt.trainer import Trainer
+from onmt.reinforce_trainer import ReinforceTrainer
 import sys
 import onmt.utils.optimizers
 onmt.utils.optimizers.Optim = onmt.utils.optimizers.Optimizer

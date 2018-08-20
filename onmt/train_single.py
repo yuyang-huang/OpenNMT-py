@@ -8,6 +8,7 @@ import argparse
 import os
 import random
 import torch
+import multiprocessing as mp
 
 import onmt.opts as opts
 
@@ -127,8 +128,16 @@ def main(opt):
 
     # Do training.
     allocate_gpu(num_gb=opt.allocate_gpu)
-    trainer.train(train_iter_fct, valid_iter_fct, opt.train_steps,
-                  opt.valid_steps)
+    if opt.reinforce:
+        # for faster validation ROUGE compute (training will be GPU-bound)
+        with mp.Pool(opt.workers) as p:
+            trainer.train_loss.pool = p
+            trainer.valid_loss.pool = p
+            trainer.train(train_iter_fct, valid_iter_fct, opt.train_steps,
+                          opt.valid_steps)
+    else:
+        trainer.train(train_iter_fct, valid_iter_fct, opt.train_steps,
+                      opt.valid_steps)
 
     if opt.tensorboard:
         trainer.report_manager.tensorboard_writer.close()

@@ -20,7 +20,12 @@ def build_loss_compute(model, tgt_vocab, opt, train=True):
     """
     device = torch.device("cuda" if onmt.utils.misc.use_gpu(opt) else "cpu")
 
-    if opt.copy_attn:
+    if opt.reinforce:
+        compute = onmt.reinforce_trainer.ReinforceLossCompute(
+            model.generator, tgt_vocab, opt.copy_loss_by_seqlength,
+            opt.gamma, opt.spm_model,
+            opt.train_cluster if train else opt.valid_cluster)
+    elif opt.copy_attn:
         if opt.share_embeddings and opt.share_decoder_embeddings:
             compute = onmt.modules.SharedVocabCopyGeneratorLossCompute(
                 model.generator, tgt_vocab, opt.copy_loss_by_seqlength)

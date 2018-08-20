@@ -45,11 +45,17 @@ def build_trainer(opt, model, fields, optim, data_type, model_saver=None):
     gpu_verbose_level = opt.gpu_verbose_level
 
     report_manager = onmt.utils.build_report_manager(opt)
-    trainer = onmt.Trainer(model, train_loss, valid_loss, optim, trunc_size,
-                           shard_size, data_type, norm_method,
-                           grad_accum_count, n_gpu, gpu_rank,
-                           gpu_verbose_level, report_manager,
-                           model_saver=model_saver)
+    if opt.reinforce:
+        trainer = onmt.ReinforceTrainer(model, train_loss, valid_loss, optim,
+                                        shard_size=shard_size, data_type=data_type,
+                                        report_manager=report_manager,
+                                        model_saver=model_saver)
+    else:
+        trainer = onmt.Trainer(model, train_loss, valid_loss, optim, trunc_size,
+                               shard_size, data_type, norm_method,
+                               grad_accum_count, n_gpu, gpu_rank,
+                               gpu_verbose_level, report_manager,
+                               model_saver=model_saver)
     return trainer
 
 

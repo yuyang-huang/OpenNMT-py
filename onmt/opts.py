@@ -413,6 +413,15 @@ def train_opts(parser):
     group.add_argument('-window_size', type=float, default=.02,
                        help="Window size for spectrogram in seconds.")
 
+    group = parser.add_argument_group('Reinforce')
+    group.add_argument('-reinforce', action='store_true', help='RL or not')
+    group.add_argument('-finetune', action='store_true', help='reset optimizer in this case')
+    group.add_argument('-train_cluster', help='Path to the training cluster data')
+    group.add_argument('-valid_cluster', help='Path to the validation cluster data')
+    group.add_argument('-spm_model', help='Path to SentencePiece model file')
+    group.add_argument('-workers', type=int, default=32, help='Number of workers to spawn.')
+    group.add_argument('-gamma', type=float, default=0.99, help='RL loss importance.')
+
 
 def translate_opts(parser):
     """ Translation / inference options """

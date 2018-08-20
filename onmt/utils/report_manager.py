@@ -144,8 +144,11 @@ class ReportMgr(ReportMgrBase):
                                        step)
 
         if valid_stats is not None:
-            self.log('[Step %d] Validation perplexity: %g' % (step, valid_stats.ppl()))
-            self.log('[Step %d] Validation accuracy: %g' % (step, valid_stats.accuracy()))
+            if valid_stats.n_words > 0:
+                self.log('[Step %d] Validation perplexity: %g' % (step, valid_stats.ppl()))
+                self.log('[Step %d] Validation accuracy: %g' % (step, valid_stats.accuracy()))
+            else:
+                self.log('[Step %d] Validation greedy ROUGE-L: %g' % (step, valid_stats.rouge()))
 
             self.maybe_log_tensorboard(valid_stats,
                                        "valid",

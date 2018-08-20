@@ -7,7 +7,7 @@ logger = logging.getLogger()
 
 
 def init_logger(log_file=None):
-    log_format = logging.Formatter("[%(asctime)s %(levelname)s] %(message)s")
+    log_format = logging.Formatter("[%(asctime)s] %(message)s", '%Y-%m-%d %H:%M:%S')
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
 
