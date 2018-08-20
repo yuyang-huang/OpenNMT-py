@@ -316,7 +316,7 @@ def train_opts(parser):
                        help='Deprecated epochs see train_steps')
     group.add_argument('-optim', default='sgd',
                        choices=['sgd', 'adagrad', 'adadelta', 'adam',
-                                'sparseadam'],
+                                'sparseadam', 'amsgrad'],
                        help="""Optimization method.""")
     group.add_argument('-adagrad_accumulator_init', type=float, default=0,
                        help="""Initializes the accumulator values in adagrad.

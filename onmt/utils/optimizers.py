@@ -60,7 +60,7 @@ def build_optim(model, opt, checkpoint):
         # when we loaded an existing model. This should be at least the case
         # for Adam, which saves "exp_avg" and "exp_avg_sq" state
         # (Exponential moving average of gradient and squared gradient values)
-        if (optim.method == 'adam') and (len(optim.optimizer.state) < 1):
+        if optim.method in ('adam', 'amsgrad') and len(optim.optimizer.state) < 1:
             raise RuntimeError(
                 "Error: loaded Adam optimizer from existing model" +
                 " but optimizer state is empty")
@@ -178,6 +178,10 @@ class Optimizer(object):
         elif self.method == 'adam':
             self.optimizer = optim.Adam(self.params, lr=self.learning_rate,
                                         betas=self.betas, eps=1e-9)
+        elif self.method == 'amsgrad':
+            self.optimizer = optim.Adam(self.params, lr=self.learning_rate,
+                                        betas=self.betas, eps=1e-9,
+                                        amsgrad=True)
         elif self.method == 'sparseadam':
             self.optimizer = MultipleOptimizer(
                 [optim.Adam(self.params, lr=self.learning_rate,
