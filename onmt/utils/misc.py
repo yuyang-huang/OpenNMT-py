@@ -53,3 +53,16 @@ def use_gpu(opt):
     """
     return (hasattr(opt, 'gpuid') and len(opt.gpuid) > 0) or \
         (hasattr(opt, 'gpu') and opt.gpu > -1)
+
+
+def allocate_gpu(device='cuda', num_gb=7.5):
+    num_gb = max(num_gb - 0.5, 0)  # compensate the error in following computation
+    start = int(num_gb * 8)
+    for i in range(start, 0, -1):
+        try:
+            torch.ones(i, 32, 1024, 1024, device=device)
+        except RuntimeError:
+            if i == 1:
+                raise
+        else:
+            break

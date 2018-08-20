@@ -250,6 +250,8 @@ def train_opts(parser):
                        help="Type of torch distributed backend")
     group.add_argument('-gpu_verbose_level', default=0, type=int,
                        help="Gives more info on each process per GPU.")
+    group.add_argument('-allocate_gpu', default=0.0, type=float,
+                       help="Pre-allocate GPU memory (in GB).")
 
     group.add_argument('-seed', type=int, default=-1,
                        help="""Random seed used for the experiments
