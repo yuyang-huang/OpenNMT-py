@@ -5,6 +5,8 @@
 from __future__ import division
 
 import argparse
+import time
+import traceback
 
 import onmt.opts as opts
 from onmt.train_multi import main as multi_main
@@ -34,4 +36,10 @@ if __name__ == "__main__":
     opts.train_opts(parser)
 
     opt = parser.parse_args()
-    main(opt)
+    while True:
+        try:
+            main(opt)
+            break
+        except Exception:
+            print(traceback.format_exc(), flush=True)
+            time.sleep(10)
