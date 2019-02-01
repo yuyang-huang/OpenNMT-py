@@ -563,7 +563,6 @@ class Translator(object):
         assert not self.dump_beam
         assert not self.use_filter_pred
         assert self.block_ngram_repeat == 0
-        assert self.global_scorer.beta == 0
 
         beam_size = self.beam_size
         batch_size = batch.batch_size
@@ -571,6 +570,8 @@ class Translator(object):
         vocab = tgt_field.vocab
         start_token = vocab.stoi[tgt_field.init_token]
         end_token = vocab.stoi[tgt_field.eos_token]
+        src_field = self.fields['src'][0][1].base_field
+        pad_token = src_field.vocab.stoi[src_field.pad_token]
 
         # Encoder forward.
         src, enc_states, memory_bank, src_lengths = self._run_encoder(batch)
@@ -649,6 +650,20 @@ class Translator(object):
             # Multiply probs by the beam probability.
             log_probs += topk_log_probs.view(-1).unsqueeze(1)
 
+            # Coverage penalty
+            beta = self.global_scorer.beta
+            if beta > 0 and alive_attn is not None:
+                coverage_penalty = torch.clamp(
+                    alive_attn.sum(0) + attn.squeeze(0), min=1.0)
+
+                # Ignore penalty at padding positions
+                # TODO: maybe no need mask? attention should be already masked
+                pad_mask = src[:, :, 0].eq(pad_token).transpose(0, 1).float()
+                coverage_penalty.view(batch_size, beam_size, -1).masked_fill_(pad_mask, 0)
+                coverage_penalty = beta * (coverage_penalty.sum(1) - memory_lengths.float())
+                log_probs -= coverage_penalty.unsqueeze(1)
+
+            # Length penalty
             alpha = self.global_scorer.alpha
             length_penalty = ((5.0 + (step + 1)) / 6.0) ** alpha
 
@@ -656,9 +671,6 @@ class Translator(object):
             curr_scores = log_probs / length_penalty
             curr_scores = curr_scores.reshape(-1, beam_size * vocab_size)
             topk_scores, topk_ids = curr_scores.topk(beam_size, dim=-1)
-
-            # Recover log probs.
-            topk_log_probs = topk_scores * length_penalty
 
             # Resolve beam origin and true word ids.
             topk_beam_index = topk_ids.div(vocab_size)
@@ -669,6 +681,14 @@ class Translator(object):
                     topk_beam_index
                     + beam_offset[:topk_beam_index.size(0)].unsqueeze(1))
             select_indices = batch_index.view(-1)
+
+            # Recover log probs.
+            topk_log_probs = topk_scores * length_penalty
+            if beta > 0 and alive_attn is not None:
+                coverage_penalty = (coverage_penalty
+                                    .index_select(0, select_indices)
+                                    .view(batch_size, beam_size))
+                topk_log_probs += coverage_penalty
 
             # Append last prediction.
             alive_seq = torch.cat(
