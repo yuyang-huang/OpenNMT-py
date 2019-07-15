@@ -1,4 +1,5 @@
 """Define RNN-based encoders."""
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -7,6 +8,7 @@ from torch.nn.utils.rnn import pad_packed_sequence as unpack
 
 from onmt.encoders.encoder import EncoderBase
 from onmt.utils.rnn_factory import rnn_factory
+from onmt.modules import VariationalDropout
 
 
 class RNNEncoder(EncoderBase):
@@ -23,8 +25,8 @@ class RNNEncoder(EncoderBase):
     """
 
     def __init__(self, rnn_type, bidirectional, num_layers,
-                 hidden_size, dropout=0.0, embeddings=None,
-                 use_bridge=False):
+                 hidden_size, dropout=0.0, dropout_type='variational',
+                 embeddings=None, use_bridge=False):
         super(RNNEncoder, self).__init__()
         assert embeddings is not None
 
@@ -39,7 +41,13 @@ class RNNEncoder(EncoderBase):
                         hidden_size=hidden_size,
                         num_layers=num_layers,
                         dropout=dropout,
+                        dropout_type=dropout_type,
                         bidirectional=bidirectional)
+
+        if dropout_type == 'variational':
+            self.dropout = VariationalDropout(p=dropout)
+        else:
+            self.dropout = nn.Dropout(p=dropout)
 
         # Initialize the bridge layer
         self.use_bridge = use_bridge
@@ -57,6 +65,7 @@ class RNNEncoder(EncoderBase):
             opt.enc_layers,
             opt.enc_rnn_size,
             opt.dropout[0] if type(opt.dropout) is list else opt.dropout,
+            opt.dropout_type,
             embeddings,
             opt.bridge)
 
@@ -73,10 +82,21 @@ class RNNEncoder(EncoderBase):
             lengths_list = lengths.view(-1).tolist()
             packed_emb = pack(emb, lengths_list)
 
-        memory_bank, encoder_final = self.rnn(packed_emb)
+        if isinstance(self.rnn, nn.ModuleList):
+            final_h, final_c = [], []
+            memory_bank = packed_emb
+            for layer in self.rnn:
+                memory_bank = self.dropout(memory_bank)
+                memory_bank, (h, c) = layer(memory_bank)
+                final_h.append(h)
+                final_c.append(c)
+            encoder_final = (torch.cat(final_h), torch.cat(final_c))
+        else:
+            memory_bank, encoder_final = self.rnn(packed_emb)
 
         if lengths is not None and not self.no_pack_padded_seq:
             memory_bank = unpack(memory_bank)[0]
+        memory_bank = self.dropout(memory_bank)
 
         if self.use_bridge:
             encoder_final = self._bridge(encoder_final)

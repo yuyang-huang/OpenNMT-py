@@ -5,13 +5,15 @@ import torch.nn as nn
 import onmt.models
 
 
-def rnn_factory(rnn_type, **kwargs):
+def rnn_factory(rnn_type, num_layers, dropout, dropout_type, **kwargs):
     """ rnn factory, Use pytorch version when available. """
-    no_pack_padded_seq = False
+    no_pack_padded_seq = rnn_type == 'SRU' or dropout > 0
     if rnn_type == "SRU":
         # SRU doesn't support PackedSequence.
-        no_pack_padded_seq = True
-        rnn = onmt.models.sru.SRU(**kwargs)
+        rnn = onmt.models.sru.SRU(num_layers=num_layers,
+                                  dropout=dropout,
+                                  **kwargs)
     else:
-        rnn = getattr(nn, rnn_type)(**kwargs)
+        rnn_cls = getattr(nn, rnn_type)
+        rnn = nn.ModuleList([rnn_cls(**kwargs) for _ in range(num_layers)])
     return rnn, no_pack_padded_seq
