@@ -3,6 +3,7 @@
 """
 import torch.nn as nn
 import onmt.models
+from onmt.modules import WeightDroppedLSTM
 
 
 def rnn_factory(rnn_type, num_layers, dropout, dropout_type, **kwargs):
@@ -14,6 +15,10 @@ def rnn_factory(rnn_type, num_layers, dropout, dropout_type, **kwargs):
                                   dropout=dropout,
                                   **kwargs)
     else:
-        rnn_cls = getattr(nn, rnn_type)
+        if dropout_type == 'variational':
+            assert rnn_type == 'LSTM'
+            rnn_cls = WeightDroppedLSTM
+        else:
+            rnn_cls = getattr(nn, rnn_type)
         rnn = nn.ModuleList([rnn_cls(**kwargs) for _ in range(num_layers)])
     return rnn, no_pack_padded_seq
