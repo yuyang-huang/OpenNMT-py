@@ -88,6 +88,28 @@ def build_decoder(opt, embeddings):
     return str2dec[dec_type].from_opt(opt, embeddings)
 
 
+def build_generator(opt, fields, decoder):
+    if not opt.copy_attn:
+        if opt.generator_function == "sparsemax":
+            gen_func = onmt.modules.sparse_activations.LogSparsemax(dim=-1)
+        else:
+            gen_func = nn.LogSoftmax(dim=-1)
+        generator = nn.Sequential(
+            nn.Linear(opt.dec_rnn_size,
+                      len(fields["tgt"].base_field.vocab)),
+            Cast(torch.float32),
+            gen_func
+        )
+        if opt.share_decoder_embeddings:
+            generator[0].weight = decoder.embeddings.word_lut.weight
+    else:
+        tgt_base_field = fields["tgt"].base_field
+        vocab_size = len(tgt_base_field.vocab)
+        pad_idx = tgt_base_field.vocab.stoi[tgt_base_field.pad_token]
+        generator = CopyGenerator(opt.dec_rnn_size, vocab_size, pad_idx)
+    return generator
+
+
 def load_test_model(opt, model_path=None):
     if model_path is None:
         model_path = opt.models[0]
@@ -112,6 +134,44 @@ def load_test_model(opt, model_path=None):
     model.eval()
     model.generator.eval()
     return fields, model, model_opt
+
+
+def init(opt, model, generator, checkpoint=None):
+    if checkpoint is not None:
+        # This preserves backward-compat for models using customed layernorm
+        def fix_key(s):
+            s = re.sub(r'(.*)\.layer_norm((_\d+)?)\.b_2',
+                       r'\1.layer_norm\2.bias', s)
+            s = re.sub(r'(.*)\.layer_norm((_\d+)?)\.a_2',
+                       r'\1.layer_norm\2.weight', s)
+            return s
+
+        checkpoint['model'] = {fix_key(k): v
+                               for k, v in checkpoint['model'].items()}
+        # end of patch for backward compatibility
+
+        model.load_state_dict(checkpoint['model'], strict=False)
+        generator.load_state_dict(checkpoint['generator'], strict=False)
+    else:
+        if opt.param_init != 0.0:
+            for p in model.parameters():
+                p.data.uniform_(-opt.param_init, opt.param_init)
+            for p in generator.parameters():
+                p.data.uniform_(-opt.param_init, opt.param_init)
+        if opt.param_init_glorot:
+            for p in model.parameters():
+                if p.dim() > 1:
+                    xavier_uniform_(p)
+            for p in generator.parameters():
+                if p.dim() > 1:
+                    xavier_uniform_(p)
+
+        if hasattr(model.encoder, 'embeddings'):
+            model.encoder.embeddings.load_pretrained_vectors(
+                opt.pre_word_vecs_enc)
+        if hasattr(model.decoder, 'embeddings'):
+            model.decoder.embeddings.load_pretrained_vectors(
+                opt.pre_word_vecs_dec)
 
 
 def build_base_model(model_opt, fields, gpu, checkpoint=None, gpu_id=None):
@@ -172,61 +232,10 @@ def build_base_model(model_opt, fields, gpu, checkpoint=None, gpu_id=None):
     model = onmt.models.NMTModel(encoder, decoder)
 
     # Build Generator.
-    if not model_opt.copy_attn:
-        if model_opt.generator_function == "sparsemax":
-            gen_func = onmt.modules.sparse_activations.LogSparsemax(dim=-1)
-        else:
-            gen_func = nn.LogSoftmax(dim=-1)
-        generator = nn.Sequential(
-            nn.Linear(model_opt.dec_rnn_size,
-                      len(fields["tgt"].base_field.vocab)),
-            Cast(torch.float32),
-            gen_func
-        )
-        if model_opt.share_decoder_embeddings:
-            generator[0].weight = decoder.embeddings.word_lut.weight
-    else:
-        tgt_base_field = fields["tgt"].base_field
-        vocab_size = len(tgt_base_field.vocab)
-        pad_idx = tgt_base_field.vocab.stoi[tgt_base_field.pad_token]
-        generator = CopyGenerator(model_opt.dec_rnn_size, vocab_size, pad_idx)
+    generator = build_generator(model_opt, fields, decoder)
 
     # Load the model states from checkpoint or initialize them.
-    if checkpoint is not None:
-        # This preserves backward-compat for models using customed layernorm
-        def fix_key(s):
-            s = re.sub(r'(.*)\.layer_norm((_\d+)?)\.b_2',
-                       r'\1.layer_norm\2.bias', s)
-            s = re.sub(r'(.*)\.layer_norm((_\d+)?)\.a_2',
-                       r'\1.layer_norm\2.weight', s)
-            return s
-
-        checkpoint['model'] = {fix_key(k): v
-                               for k, v in checkpoint['model'].items()}
-        # end of patch for backward compatibility
-
-        model.load_state_dict(checkpoint['model'], strict=False)
-        generator.load_state_dict(checkpoint['generator'], strict=False)
-    else:
-        if model_opt.param_init != 0.0:
-            for p in model.parameters():
-                p.data.uniform_(-model_opt.param_init, model_opt.param_init)
-            for p in generator.parameters():
-                p.data.uniform_(-model_opt.param_init, model_opt.param_init)
-        if model_opt.param_init_glorot:
-            for p in model.parameters():
-                if p.dim() > 1:
-                    xavier_uniform_(p)
-            for p in generator.parameters():
-                if p.dim() > 1:
-                    xavier_uniform_(p)
-
-        if hasattr(model.encoder, 'embeddings'):
-            model.encoder.embeddings.load_pretrained_vectors(
-                model_opt.pre_word_vecs_enc)
-        if hasattr(model.decoder, 'embeddings'):
-            model.decoder.embeddings.load_pretrained_vectors(
-                model_opt.pre_word_vecs_dec)
+    init(model_opt, model, generator, checkpoint=checkpoint)
 
     model.generator = generator
     model.to(device)
