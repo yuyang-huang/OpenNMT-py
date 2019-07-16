@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 from onmt.models.stacked_rnn import StackedLSTM, StackedGRU
-from onmt.modules import context_gate_factory, GlobalAttention, VariationalDropout
+from onmt.modules import context_gate_factory, GlobalAttention
 from onmt.utils.rnn_factory import rnn_factory
 
 from onmt.utils.misc import aeq
@@ -83,8 +83,8 @@ class RNNDecoderBase(DecoderBase):
     def __init__(self, rnn_type, bidirectional_encoder, num_layers,
                  hidden_size, attn_type="general", attn_func="softmax",
                  coverage_attn=False, context_gate=None,
-                 copy_attn=False, dropout=0.0, dropout_type='variational',
-                 embeddings=None, reuse_copy_attn=False, copy_attn_type="general"):
+                 copy_attn=False, dropout=0.0, embeddings=None,
+                 reuse_copy_attn=False, copy_attn_type="general"):
         super(RNNDecoderBase, self).__init__(
             attentional=attn_type != "none" and attn_type is not None)
 
@@ -92,10 +92,7 @@ class RNNDecoderBase(DecoderBase):
         self.num_layers = num_layers
         self.hidden_size = hidden_size
         self.embeddings = embeddings
-        if dropout_type == 'variational' and not isinstance(self, InputFeedRNNDecoder):
-            self.dropout = VariationalDropout(dropout)
-        else:
-            self.dropout = nn.Dropout(dropout)
+        self.dropout = nn.Dropout(dropout)
 
         # Decoder state
         self.state = {}
@@ -105,8 +102,7 @@ class RNNDecoderBase(DecoderBase):
                                    input_size=self._input_size,
                                    hidden_size=hidden_size,
                                    num_layers=num_layers,
-                                   dropout=dropout,
-                                   dropout_type=dropout_type)
+                                   dropout=dropout)
 
         # Set up the context gate.
         self.context_gate = None
@@ -155,8 +151,8 @@ class RNNDecoderBase(DecoderBase):
             opt.coverage_attn,
             opt.context_gate,
             opt.copy_attn,
-            opt.dropout[0] if type(opt.dropout) is list else opt.dropout,
-            opt.dropout_type,
+            opt.dropout[0] if type(opt.dropout) is list
+            else opt.dropout,
             embeddings,
             opt.reuse_copy_attn,
             opt.copy_attn_type)
@@ -288,20 +284,10 @@ class StdRNNDecoder(RNNDecoderBase):
         attns = {}
         emb = self.embeddings(tgt)
 
-        if isinstance(self.rnn, nn.ModuleList):
-            final_h, final_c = [], []
-            rnn_output = emb
-            for layer in self.rnn:
-                rnn_output = self.dropout(rnn_output)
-                rnn_output, (h, c) = layer(rnn_output)
-                final_h.append(h)
-                final_c.append(c)
-            dec_state = (torch.cat(final_h), torch.cat(final_c))
+        if isinstance(self.rnn, nn.GRU):
+            rnn_output, dec_state = self.rnn(emb, self.state["hidden"][0])
         else:
-            if isinstance(self.rnn, nn.GRU):
-                rnn_output, dec_state = self.rnn(emb, self.state["hidden"][0])
-            else:
-                rnn_output, dec_state = self.rnn(emb, self.state["hidden"])
+            rnn_output, dec_state = self.rnn(emb, self.state["hidden"])
 
         # Check
         tgt_len, tgt_batch, _ = tgt.size()
@@ -436,7 +422,7 @@ class InputFeedRNNDecoder(RNNDecoderBase):
         return dec_state, dec_outs, attns
 
     def _build_rnn(self, rnn_type, input_size,
-                   hidden_size, num_layers, dropout, dropout_type):
+                   hidden_size, num_layers, dropout):
         assert rnn_type != "SRU", "SRU doesn't support input feed! " \
             "Please set -input_feed 0!"
         stacked_cell = StackedLSTM if rnn_type == "LSTM" else StackedGRU
