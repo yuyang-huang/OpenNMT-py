@@ -29,7 +29,12 @@ def build_translator(opt, report_score=True, logger=None, out_file=None):
 
     scorer = onmt.translate.GNMTGlobalScorer.from_opt(opt)
 
-    translator = Translator.from_opt(
+    if opt.triple_decoder:
+        cls = TripleDecoder
+    else:
+        cls = Translator
+
+    translator = cls.from_opt(
         model,
         fields,
         opt,
@@ -865,3 +870,320 @@ class Translator(object):
             shell=True, stdin=self.out_file
         ).decode("utf-8").strip()
         return msg
+
+
+class TripleDecoder(Translator):
+    """Custom beam search for generating triples.
+
+    Parameters
+    ----------
+    predicate_position : str
+        Whether the predicate should be placed before the object, after it, or in between.
+        This determines whether an entity or a predicate should be generated at a given position.
+        Possible values are "first", "middle", "last".
+    rerank_entities : bool
+        Whether to rerank entities according to the edit distance to the input sentence.
+    """
+    def __init__(self, predicate_position='middle', rerank_entities=True, **kwargs):
+        super(TripleDecoder, self).__init__(**kwargs)
+        self.predicate_position = predicate_position
+        self.rerank_entities = rerank_entities
+        self._invalid_token_masks = self._generate_invalid_token_masks()
+
+    @classmethod
+    def from_opt(
+            cls,
+            model,
+            fields,
+            opt,
+            model_opt,
+            global_scorer=None,
+            out_file=None,
+            report_score=True,
+            logger=None):
+        src_reader = inputters.str2reader[opt.data_type].from_opt(opt)
+        tgt_reader = inputters.str2reader["text"].from_opt(opt)
+        return cls(
+            model=model,
+            fields=fields,
+            src_reader=src_reader,
+            tgt_reader=tgt_reader,
+            gpu=opt.gpu,
+            n_best=opt.n_best,
+            min_length=opt.min_length,
+            max_length=opt.max_length,
+            ratio=opt.ratio,
+            beam_size=opt.beam_size,
+            random_sampling_topk=opt.random_sampling_topk,
+            random_sampling_temp=opt.random_sampling_temp,
+            stepwise_penalty=opt.stepwise_penalty,
+            dump_beam=opt.dump_beam,
+            block_ngram_repeat=opt.block_ngram_repeat,
+            ignore_when_blocking=set(opt.ignore_when_blocking),
+            replace_unk=opt.replace_unk,
+            phrase_table=opt.phrase_table,
+            data_type=opt.data_type,
+            verbose=opt.verbose,
+            report_bleu=opt.report_bleu,
+            report_rouge=opt.report_rouge,
+            report_time=opt.report_time,
+            copy_attn=model_opt.copy_attn,
+            global_scorer=global_scorer,
+            out_file=out_file,
+            report_score=report_score,
+            logger=logger,
+            seed=opt.seed,
+            predicate_position=opt.predicate_position,
+            rerank_entities=opt.rerank_entities)
+
+    def _generate_invalid_token_masks(self):
+        """Generate the binary masks of invalid tokens at each step.
+
+        For example, if ``predicate_position == "middle"``, then
+        - If ``step % 3 == 0``, then the token could be an entity or EOS.
+        - If ``step % 3 == 1``, then the token should be a predicate.
+        - If ``step % 3 == 2``, then the token should be an entity.
+
+        BOS, UNK, PAD tokens are always invalid to generate.
+        """
+        predicate_indices = [i for i, s in enumerate(self._tgt_vocab.itos) if s.startswith('P')]
+        entity_indices = [i for i, s in enumerate(self._tgt_vocab.itos) if s.startswith('Q')]
+        special_token_indices = [self._tgt_bos_idx, self._tgt_pad_idx, self._tgt_unk_idx]
+
+        mask = torch.zeros(3, self._tgt_vocab_len, dtype=torch.uint8, device=self._dev)
+        mask[[1, 2], self._tgt_eos_idx] = 1  # avoid incomplete triples
+        mask[:, special_token_indices] = 1
+
+        if self.predicate_position == 'first':
+            predicate_idx = 0
+        elif self.predicate_position == 'middle':
+            predicate_idx = 1
+        else:
+            predicate_idx = 2
+
+        for i in range(len(mask)):
+            if i == predicate_idx:
+                mask[i, entity_indices] = 1
+            else:
+                mask[i, predicate_indices] = 1
+
+        return mask
+
+    def translate_batch(self, batch, src_vocabs, attn_debug):
+        """Always use beam search for simplicity.
+        """
+        with torch.no_grad():
+            return self._translate_batch(
+                batch,
+                src_vocabs,
+                self.max_length,
+                min_length=self.min_length,
+                ratio=self.ratio,
+                n_best=self.n_best,
+                return_attention=attn_debug or self.replace_unk)
+
+    def _translate_batch(
+            self,
+            batch,
+            src_vocabs,
+            max_length,
+            min_length=0,
+            ratio=0.,
+            n_best=1,
+            return_attention=False):
+        """Copy-and-pasted from the original `Translator` class.
+
+        The only change is to use `TripleBeamSearch` to replace the vanilla `BeamSearch`.
+        """
+        # TODO: support these blacklisted features.
+        assert not self.dump_beam
+
+        # (0) Prep the components of the search.
+        use_src_map = self.copy_attn
+        beam_size = self.beam_size
+        batch_size = batch.batch_size
+
+        # (1) Run the encoder on the src.
+        src, enc_states, memory_bank, src_lengths = self._run_encoder(batch)
+        self.model.decoder.init_state(src, memory_bank, enc_states)
+
+        results = {
+            "predictions": None,
+            "scores": None,
+            "attention": None,
+            "batch": batch,
+            "gold_score": self._gold_score(
+                batch, memory_bank, src_lengths, src_vocabs, use_src_map,
+                enc_states, batch_size, src)}
+
+        # (2) Repeat src objects `beam_size` times.
+        # We use batch_size x beam_size
+        src_map = (tile(batch.src_map, beam_size, dim=1)
+                   if use_src_map else None)
+        self.model.decoder.map_state(
+            lambda state, dim: tile(state, beam_size, dim=dim))
+
+        if isinstance(memory_bank, tuple):
+            memory_bank = tuple(tile(x, beam_size, dim=1) for x in memory_bank)
+            mb_device = memory_bank[0].device
+        else:
+            memory_bank = tile(memory_bank, beam_size, dim=1)
+            mb_device = memory_bank.device
+        memory_lengths = tile(src_lengths, beam_size)
+
+        # (0) pt 2, prep the beam object
+        beam = TripleBeamSearch(
+            beam_size=beam_size,
+            n_best=n_best,
+            batch_size=batch_size,
+            global_scorer=self.global_scorer,
+            pad=self._tgt_pad_idx,
+            eos=self._tgt_eos_idx,
+            bos=self._tgt_bos_idx,
+            min_length=min_length,
+            ratio=ratio,
+            max_length=max_length,
+            mb_device=mb_device,
+            return_attention=return_attention,
+            stepwise_penalty=self.stepwise_penalty,
+            block_ngram_repeat=self.block_ngram_repeat,
+            exclusion_tokens=self._exclusion_idxs,
+            memory_lengths=memory_lengths,
+            invalid_token_masks=self._invalid_token_masks)
+
+        for step in range(max_length):
+            decoder_input = beam.current_predictions.view(1, -1, 1)
+
+            log_probs, attn = self._decode_and_generate(
+                decoder_input,
+                memory_bank,
+                batch,
+                src_vocabs,
+                memory_lengths=memory_lengths,
+                src_map=src_map,
+                step=step,
+                batch_offset=beam._batch_offset)
+
+            beam.advance(log_probs, attn)
+            any_beam_is_finished = beam.is_finished.any()
+            if any_beam_is_finished:
+                beam.update_finished()
+                if beam.done:
+                    break
+
+            select_indices = beam.current_origin
+
+            if any_beam_is_finished:
+                # Reorder states.
+                if isinstance(memory_bank, tuple):
+                    memory_bank = tuple(x.index_select(1, select_indices)
+                                        for x in memory_bank)
+                else:
+                    memory_bank = memory_bank.index_select(1, select_indices)
+
+                memory_lengths = memory_lengths.index_select(0, select_indices)
+
+                if src_map is not None:
+                    src_map = src_map.index_select(1, select_indices)
+
+            self.model.decoder.map_state(
+                lambda state, dim: state.index_select(dim, select_indices))
+
+        results["scores"] = beam.scores
+        results["predictions"] = beam.predictions
+        results["attention"] = beam.attention
+        return results
+
+
+class TripleBeamSearch(BeamSearch):
+    def __init__(self, invalid_token_masks, **kwargs):
+        self._invalid_token_masks = invalid_token_masks
+        super(TripleBeamSearch, self).__init__(**kwargs)
+
+    def block_invalid_token_type(self, log_probs, step):
+        invalid_token_mask = self._invalid_token_masks[step % 3].unsqueeze(0)
+        log_probs.masked_fill_(invalid_token_mask, -10e20)
+
+    def advance(self, log_probs, attn):
+        """Copy-and-pasted from the original `BeamSearch` class.
+
+        The only change is adding a call to `self.block_invalid_token_type()`.
+        """
+        vocab_size = log_probs.size(-1)
+
+        # using integer division to get an integer _B without casting
+        _B = log_probs.shape[0] // self.beam_size
+
+        if self._stepwise_cov_pen and self._prev_penalty is not None:
+            self.topk_log_probs += self._prev_penalty
+            self.topk_log_probs -= self.global_scorer.cov_penalty(
+                self._coverage + attn, self.global_scorer.beta).view(
+                _B, self.beam_size)
+
+        # force the output to be longer than self.min_length
+        step = len(self)
+        self.ensure_min_length(log_probs)
+
+        # Multiply probs by the beam probability.
+        log_probs += self.topk_log_probs.view(_B * self.beam_size, 1)
+
+        self.block_ngram_repeats(log_probs)
+        self.block_invalid_token_type(log_probs, step - 1)  # -1 to exclude the BOS token
+
+        # if the sequence ends now, then the penalty is the current
+        # length + 1, to include the EOS token
+        length_penalty = self.global_scorer.length_penalty(
+            step + 1, alpha=self.global_scorer.alpha)
+
+        # Flatten probs into a list of possibilities.
+        curr_scores = log_probs / length_penalty
+        curr_scores = curr_scores.reshape(_B, self.beam_size * vocab_size)
+        torch.topk(curr_scores, self.beam_size, dim=-1,
+                   out=(self.topk_scores, self.topk_ids))
+
+        # Recover log probs.
+        # Length penalty is just a scalar. It doesn't matter if it's applied
+        # before or after the topk.
+        torch.mul(self.topk_scores, length_penalty, out=self.topk_log_probs)
+
+        # Resolve beam origin and map to batch index flat representation.
+        torch.div(self.topk_ids, vocab_size, out=self._batch_index)
+        self._batch_index += self._beam_offset[:_B].unsqueeze(1)
+        self.select_indices = self._batch_index.view(_B * self.beam_size)
+
+        self.topk_ids.fmod_(vocab_size)  # resolve true word ids
+
+        # Append last prediction.
+        self.alive_seq = torch.cat(
+            [self.alive_seq.index_select(0, self.select_indices),
+             self.topk_ids.view(_B * self.beam_size, 1)], -1)
+        if self.return_attention or self._cov_pen:
+            current_attn = attn.index_select(1, self.select_indices)
+            if step == 1:
+                self.alive_attn = current_attn
+                # update global state (step == 1)
+                if self._cov_pen:  # coverage penalty
+                    self._prev_penalty = torch.zeros_like(self.topk_log_probs)
+                    self._coverage = current_attn
+            else:
+                self.alive_attn = self.alive_attn.index_select(
+                    1, self.select_indices)
+                self.alive_attn = torch.cat([self.alive_attn, current_attn], 0)
+                # update global state (step > 1)
+                if self._cov_pen:
+                    self._coverage = self._coverage.index_select(
+                        1, self.select_indices)
+                    self._coverage += current_attn
+                    self._prev_penalty = self.global_scorer.cov_penalty(
+                        self._coverage, beta=self.global_scorer.beta).view(
+                            _B, self.beam_size)
+
+        if self._vanilla_cov_pen:
+            # shape: (batch_size x beam_size, 1)
+            cov_penalty = self.global_scorer.cov_penalty(
+                self._coverage,
+                beta=self.global_scorer.beta)
+            self.topk_scores -= cov_penalty.view(_B, self.beam_size)
+
+        self.is_finished = self.topk_ids.eq(self.eos)
+        self.ensure_max_length()

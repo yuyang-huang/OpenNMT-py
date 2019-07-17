@@ -640,6 +640,14 @@ def translate_opts(parser):
     group.add('--max_sent_length', '-max_sent_length', action=DeprecateAction,
               help="Deprecated, use `-max_length` instead")
 
+    # Triple decoding
+    group.add('--triple_decoder', '-triple_decoder', action='store_true',
+              help="Use customized triple decoder")
+    group.add('--predicate_position', choices=['first', 'middle', 'last'],
+              default='middle', help='The position of predicate in triples')
+    group.add('--rerank_entities', '-rerank_entities', action='store_true',
+              help="Rerank entities according to textual similarity to source sentence")
+
     # Alpha and Beta values for Google Length + Coverage penalty
     # Described here: https://arxiv.org/pdf/1609.08144.pdf, Section 7
     group.add('--stepwise_penalty', '-stepwise_penalty', action='store_true',
