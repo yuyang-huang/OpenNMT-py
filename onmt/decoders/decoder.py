@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 from onmt.models.stacked_rnn import StackedLSTM, StackedGRU
-from onmt.modules import context_gate_factory, GlobalAttention
+from onmt.modules import context_gate_factory, GlobalAttention, NGramAttention
 from onmt.utils.rnn_factory import rnn_factory
 
 from onmt.utils.misc import aeq
@@ -84,7 +84,8 @@ class RNNDecoderBase(DecoderBase):
                  hidden_size, attn_type="general", attn_func="softmax",
                  coverage_attn=False, context_gate=None,
                  copy_attn=False, dropout=0.0, embeddings=None,
-                 reuse_copy_attn=False, copy_attn_type="general"):
+                 reuse_copy_attn=False, copy_attn_type="general",
+                 ngram_attention=0, ngram_attend_to="encoder", ngram_merge_mode="pooling"):
         super(RNNDecoderBase, self).__init__(
             attentional=attn_type != "none" and attn_type is not None)
 
@@ -118,6 +119,19 @@ class RNNDecoderBase(DecoderBase):
             if self._coverage:
                 raise ValueError("Cannot use coverage term with no attention.")
             self.attn = None
+        elif ngram_attention > 0:
+            # Set up the n-gram attention
+            if ngram_attend_to == 'word':
+                memory_dim = embeddings.embedding_size
+            else:
+                memory_dim = hidden_size
+            self.attn = NGramAttention(
+                query_dim=hidden_size,
+                memory_dim=memory_dim,
+                max_order=ngram_attention,
+                attend_to=ngram_attend_to,
+                merge_mode=ngram_merge_mode,
+            )
         else:
             self.attn = GlobalAttention(
                 hidden_size, coverage=coverage_attn,
@@ -155,7 +169,10 @@ class RNNDecoderBase(DecoderBase):
             else opt.dropout,
             embeddings,
             opt.reuse_copy_attn,
-            opt.copy_attn_type)
+            opt.copy_attn_type,
+            opt.ngram_attention,
+            opt.ngram_attend_to,
+            opt.ngram_merge_mode)
 
     def init_state(self, src, memory_bank, encoder_final):
         """Initialize decoder state with last state of the encoder."""
@@ -299,12 +316,21 @@ class StdRNNDecoder(RNNDecoderBase):
         if not self.attentional:
             dec_outs = rnn_output
         else:
+            # for n-gram attention, the memory bank is a tuple
+            if isinstance(memory_bank, tuple):
+                memory_bank = tuple(x.transpose(0, 1) for x in memory_bank)
+            else:
+                memory_bank = memory_bank.transpose(0, 1)
+
             dec_outs, p_attn = self.attn(
                 rnn_output.transpose(0, 1).contiguous(),
-                memory_bank.transpose(0, 1),
+                memory_bank,
                 memory_lengths=memory_lengths
             )
-            attns["std"] = p_attn
+            if isinstance(self.attn, NGramAttention):
+                attns.update(p_attn)
+            else:
+                attns["std"] = p_attn
 
         # Calculate the context gate.
         if self.context_gate is not None:

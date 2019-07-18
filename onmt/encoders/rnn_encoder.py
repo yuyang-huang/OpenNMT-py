@@ -24,7 +24,7 @@ class RNNEncoder(EncoderBase):
 
     def __init__(self, rnn_type, bidirectional, num_layers,
                  hidden_size, dropout=0.0, embeddings=None,
-                 use_bridge=False):
+                 use_bridge=False, return_embeddings=False):
         super(RNNEncoder, self).__init__()
         assert embeddings is not None
 
@@ -48,6 +48,8 @@ class RNNEncoder(EncoderBase):
                                     hidden_size,
                                     num_layers)
 
+        self.return_embeddings = return_embeddings
+
     @classmethod
     def from_opt(cls, opt, embeddings):
         """Alternate constructor."""
@@ -58,7 +60,8 @@ class RNNEncoder(EncoderBase):
             opt.enc_rnn_size,
             opt.dropout[0] if type(opt.dropout) is list else opt.dropout,
             embeddings,
-            opt.bridge)
+            opt.bridge,
+            opt.ngram_attention > 0)
 
     def forward(self, src, lengths=None):
         """See :func:`EncoderBase.forward()`"""
@@ -80,6 +83,10 @@ class RNNEncoder(EncoderBase):
 
         if self.use_bridge:
             encoder_final = self._bridge(encoder_final)
+
+        if self.return_embeddings:
+            memory_bank = (memory_bank, emb)
+
         return encoder_final, memory_bank, lengths
 
     def _initialize_bridge(self, rnn_type,

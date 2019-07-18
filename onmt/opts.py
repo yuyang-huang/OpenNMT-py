@@ -153,6 +153,13 @@ def model_opts(parser):
               help='Size of hidden transformer feed-forward')
     group.add('--aan_useffn', '-aan_useffn', action="store_true",
               help='Turn on the FFN layer in the AAN decoder')
+    group.add('--ngram_attention', '-ngram_attention',
+              type=int, default=0, help="The maximum order of n-gram attention to use")
+    group.add('--ngram_attend_to', '-ngram_attend_to', choices=['word', 'encoder'],
+              default='encoder', help="The memory bank to which the n-gram attention will attend")
+    group.add('--ngram_merge_mode', '-ngram_merge_mode', choices=['concat', 'pooling'],
+              default='pooling', help="Whether to concat the token embeddings to form the "
+              "n-gram embedding or use mean-max pooling")
 
     # Generator and loss options.
     group.add('--copy_attn', '-copy_attn', action="store_true",
