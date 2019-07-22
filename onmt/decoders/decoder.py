@@ -331,6 +331,7 @@ class StdRNNDecoder(RNNDecoderBase):
                 attns.update(p_attn)
             else:
                 attns["std"] = p_attn
+                attns["copy"] = attns["std"]
 
         # Calculate the context gate.
         if self.context_gate is not None:
