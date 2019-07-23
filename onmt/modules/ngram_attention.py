@@ -58,7 +58,7 @@ class NGramAttention(nn.Module):
         # compute context vectors
         global_context, global_alignment = self.compute_global_context(
             query, memory_bank, memory_lengths=memory_lengths)
-        ngram_context, ngram_alignment = self.compute_ngram_context(
+        ngram_context, ngram_alignment, token_alignment = self.compute_ngram_context(
             query, emb, memory_lengths=memory_lengths)
 
         # concatenate
@@ -68,7 +68,7 @@ class NGramAttention(nn.Module):
         attn_h = self.linear_out[0](concat_context).view(batch, query_len, query_dim)
 
         attn_h, alignments = self.reshape_output(
-            attn_h, global_alignment, ngram_alignment, one_step)
+            attn_h, global_alignment, ngram_alignment, token_alignment, one_step)
         self.verify_output_shape(attn_h, alignments, query, memory_bank, one_step)
         return attn_h, alignments
 
@@ -97,6 +97,7 @@ class NGramAttention(nn.Module):
         # generate n-gram contexts
         ngram_contexts = []
         ngram_alignments = []
+        token_alignments = []
 
         for order in range(1, self.max_order + 1):
             num_ngrams = memory_len - order + 1
@@ -130,33 +131,43 @@ class NGramAttention(nn.Module):
                 mask = mask.unsqueeze(1)  # Make it broadcastable.
                 align.masked_fill_(1 - mask, -float('inf'))
 
-            align_vectors = F.softmax(align.view(batch * query_len, num_ngrams), -1)
-            align_vectors = align_vectors.view(batch, query_len, num_ngrams)
+            ngram_alignment = F.softmax(align.view(batch * query_len, num_ngrams), -1)
+            ngram_alignment = ngram_alignment.view(batch, query_len, num_ngrams)
 
             if memory_lengths is not None:
                 # XXX: we've randomly unmasked the first element
                 # now multiply it by zero to prevent it from affecting the loss
                 mask = memory_lengths.ge(order).view(batch, 1, 1).float()
-                align_vectors = align_vectors.mul(mask)
-            ngram_alignments.append(align_vectors)
+                ngram_alignment = ngram_alignment.mul(mask)
+            ngram_alignments.append(ngram_alignment)
 
-            c = torch.bmm(align_vectors, ngram_emb)
+            # spread the alignment probability mass evenly to each token in the n-gram
+            padded_alignments = []
+            for n in range(order):
+                padded_alignment = F.pad(ngram_alignment, (n, order - n - 1))
+                padded_alignments.append(padded_alignment / order)
+            token_alignments.append(sum(padded_alignments))
+
+            c = torch.bmm(ngram_alignment, ngram_emb)
             ngram_contexts.append(self.linear_out[order](c))
 
-        return torch.tanh(sum(ngram_contexts)), ngram_alignments
+        token_alignment = sum(token_alignments) / len(token_alignments)
+        return torch.tanh(sum(ngram_contexts)), ngram_alignments, token_alignment
 
-    def reshape_output(self, attn_h, global_alignment, ngram_alignment, one_step):
+    def reshape_output(self, attn_h, global_alignment, ngram_alignment, token_alignment, one_step):
         if one_step:
             attn_h = attn_h.squeeze(1)
             alignments = {
                 'std': global_alignment.squeeze(1),
                 'ngram': [x.squeeze(1) for x in ngram_alignment],
+                'copy': token_alignment.squeeze(1),
             }
         else:
             attn_h = attn_h.transpose(0, 1).contiguous()
             alignments = {
                 'std': global_alignment.transpose(0, 1).contiguous(),
                 'ngram': [x.transpose(0, 1).contiguous() for x in ngram_alignment],
+                'copy': token_alignment.transpose(0, 1).contiguous(),
             }
         return attn_h, alignments
 
