@@ -552,6 +552,10 @@ def train_opts(parser):
               help="Log directory for Tensorboard. "
                    "This is also the name of the run.")
 
+    group = parser.add_argument_group('Triple')
+    group.add('--order_less', '-order_less', action='store_true',
+              help='Treat target as order-less triples and randomly permute each batch')
+
     group = parser.add_argument_group('Speech')
     # Options most relevant to speech
     group.add('--sample_rate', '-sample_rate', type=int, default=16000,

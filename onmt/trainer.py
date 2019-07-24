@@ -8,11 +8,12 @@
           things to users(i.e. how to do it). Also see train.py(one of the
           users of this library) for the strategy things we do.
 """
-
+import random
 from copy import deepcopy
 import torch
 import traceback
 
+from onmt.modules import CopyGeneratorLossCompute
 import onmt.utils
 from onmt.utils.logging import logger
 
@@ -70,7 +71,8 @@ def build_trainer(opt, device_id, model, fields, optim, model_saver=None):
                            model_dtype=opt.model_dtype,
                            earlystopper=earlystopper,
                            dropout=dropout,
-                           dropout_steps=dropout_steps)
+                           dropout_steps=dropout_steps,
+                           order_less=opt.order_less)
     return trainer
 
 
@@ -107,7 +109,8 @@ class Trainer(object):
                  n_gpu=1, gpu_rank=1,
                  gpu_verbose_level=0, report_manager=None, model_saver=None,
                  average_decay=0, average_every=1, model_dtype='fp32',
-                 earlystopper=None, dropout=[0.3], dropout_steps=[0]):
+                 earlystopper=None, dropout=[0.3], dropout_steps=[0],
+                 order_less=False):
         # Basic attributes.
         self.model = model
         self.train_loss = train_loss
@@ -131,6 +134,7 @@ class Trainer(object):
         self.earlystopper = earlystopper
         self.dropout = dropout
         self.dropout_steps = dropout_steps
+        self.order_less = order_less
 
         for i in range(len(self.accum_count_l)):
             assert self.accum_count_l[i] > 0
@@ -160,6 +164,9 @@ class Trainer(object):
         normalization = 0
         self.accum_count = self._accum_count(self.optim.training_step)
         for batch in iterator:
+            if self.order_less:
+                batch = self._shuffle_triples(batch)
+
             batches.append(batch)
             if self.norm_method == "tokens":
                 num_tokens = batch.tgt[1:, :, 0].ne(
@@ -174,6 +181,45 @@ class Trainer(object):
                 normalization = 0
         if batches:
             yield batches, normalization
+
+    def _shuffle_triples(self, batch):
+        assert isinstance(self.train_loss, CopyGeneratorLossCompute)
+        eos_idx = self.train_loss.tgt_vocab.stoi['</s>']
+        trpl_idx = self.train_loss.tgt_vocab.stoi['<TRPL>']
+
+        # extract the positions of </s> and <TRPL> in each sentence
+        target = batch.tgt.squeeze(2)
+        eos_positions = target.eq(eos_idx).max(dim=0)[1]
+        trpl_mask = target.eq(trpl_idx)
+        trpl_positions = [trpl_mask.argsort(dim=0, descending=True)[:n, b].sort()[0]
+                          for b, n in enumerate(trpl_mask.sum(dim=0))]
+
+        for b, trpl_pos in enumerate(trpl_positions):
+            n_triples = len(trpl_pos) + 1
+            if n_triples == 1:
+                # no need to permute if there's only one triple
+                continue
+
+            triples = []
+            last_pos = 0
+            for pos in trpl_pos:
+                triples.append(target[last_pos:pos, b].clone())
+                last_pos = pos + 1
+
+            eos_pos = eos_positions[b]
+            triples.append(target[last_pos:eos_pos, b].clone())
+            random.shuffle(triples)
+
+            start = 0
+            for triple in triples:
+                end = start + len(triple)
+                target[start:end, b] = triple
+                target[end, b] = trpl_idx
+                start = end + 1
+            target[end] = eos_idx
+
+        batch.tgt = target.unsqueeze(2)
+        return batch
 
     def _update_average(self, step):
         if self.moving_average is None:
