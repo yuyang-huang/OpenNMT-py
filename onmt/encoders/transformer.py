@@ -99,6 +99,7 @@ class TransformerEncoder(EncoderBase):
                 max_relative_positions=max_relative_positions)
              for i in range(num_layers)])
         self.layer_norm = nn.LayerNorm(d_model, eps=1e-6)
+        self.linear_in = nn.Linear(embeddings.word_vec_size, d_model)
 
     @classmethod
     def from_opt(cls, opt, embeddings):
@@ -119,6 +120,7 @@ class TransformerEncoder(EncoderBase):
         self._check_args(src, lengths)
 
         emb = self.embeddings(src)
+        emb = self.linear_in(emb)
 
         out = emb.transpose(0, 1).contiguous()
         mask = ~sequence_mask(lengths).unsqueeze(1)
