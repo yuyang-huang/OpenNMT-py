@@ -13,7 +13,13 @@ from onmt.encoders import str2enc
 
 from onmt.decoders import str2dec
 
-from onmt.modules import Embeddings, VecEmbedding, CopyGenerator, TiedEmbeddingLinear
+from onmt.modules import (
+    Embeddings,
+    VecEmbedding,
+    CopyGenerator,
+    TiedEmbeddingLinear,
+    StructuredJointEmbeddings,
+)
 from onmt.modules.util_class import Cast
 from onmt.utils.misc import use_gpu
 from onmt.utils.logging import logger
@@ -97,8 +103,12 @@ def build_generator(opt, fields, decoder):
 
         vocab_size = len(fields["tgt"].base_field.vocab)
         if opt.share_decoder_embeddings:
-            generator_linear = TiedEmbeddingLinear(
-                opt.dec_rnn_size, vocab_size, decoder.embeddings)
+            if opt.joint_latent_size > 0:
+                generator_linear = StructuredJointEmbeddings(
+                    opt.dec_rnn_size, opt.joint_latent_size, vocab_size, decoder.embeddings)
+            else:
+                generator_linear = TiedEmbeddingLinear(
+                    opt.dec_rnn_size, vocab_size, decoder.embeddings)
         else:
             generator_linear = nn.Linear(opt.dec_rnn_size, vocab_size)
         generator = nn.Sequential(

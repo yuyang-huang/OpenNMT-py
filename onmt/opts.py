@@ -96,6 +96,8 @@ def model_opts(parser):
               help="Size of decoder rnn hidden states. "
                    "Must be equal to enc_rnn_size except for "
                    "speech-to-text.")
+    group.add('--joint_latent_size', '-joint_latent_size', type=int, default=-1,
+              help="Size of the joint latent space of input/output embeddings")
     group.add('--audio_enc_pooling', '-audio_enc_pooling',
               type=str, default='1',
               help="The amount of pooling of audio encoder, "
