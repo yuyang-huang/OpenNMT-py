@@ -86,9 +86,13 @@ class CopyGenerator(nn.Module):
        pad_idx (int)
     """
 
-    def __init__(self, input_size, output_size, pad_idx):
+    def __init__(self, input_size, output_size, pad_idx,
+                 generator_linear=None):
         super(CopyGenerator, self).__init__()
-        self.linear = nn.Linear(input_size, output_size)
+        if generator_linear is None:
+            self.linear = nn.Linear(input_size, output_size)
+        else:
+            self.linear = generator_linear
         self.linear_copy = nn.Linear(input_size, 1)
         self.pad_idx = pad_idx
 

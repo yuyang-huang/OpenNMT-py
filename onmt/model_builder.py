@@ -95,32 +95,35 @@ def build_decoder(opt, embeddings):
 
 
 def build_generator(opt, fields, decoder):
+    tgt_base_field = fields["tgt"].base_field
+    vocab_size = len(tgt_base_field.vocab)
+
+    # tied embeddings
+    if opt.share_decoder_embeddings:
+        if opt.joint_latent_size > 0:
+            generator_linear = StructuredJointEmbeddings(
+                opt.dec_rnn_size, opt.joint_latent_size, vocab_size, decoder.embeddings)
+        else:
+            generator_linear = TiedEmbeddingLinear(
+                opt.dec_rnn_size, vocab_size, decoder.embeddings)
+    else:
+        generator_linear = nn.Linear(opt.dec_rnn_size, vocab_size)
+
     if not opt.copy_attn:
         if opt.generator_function == "sparsemax":
             gen_func = onmt.modules.sparse_activations.LogSparsemax(dim=-1)
         else:
             gen_func = nn.LogSoftmax(dim=-1)
 
-        vocab_size = len(fields["tgt"].base_field.vocab)
-        if opt.share_decoder_embeddings:
-            if opt.joint_latent_size > 0:
-                generator_linear = StructuredJointEmbeddings(
-                    opt.dec_rnn_size, opt.joint_latent_size, vocab_size, decoder.embeddings)
-            else:
-                generator_linear = TiedEmbeddingLinear(
-                    opt.dec_rnn_size, vocab_size, decoder.embeddings)
-        else:
-            generator_linear = nn.Linear(opt.dec_rnn_size, vocab_size)
         generator = nn.Sequential(
             generator_linear,
             Cast(torch.float32),
             gen_func
         )
     else:
-        tgt_base_field = fields["tgt"].base_field
-        vocab_size = len(tgt_base_field.vocab)
         pad_idx = tgt_base_field.vocab.stoi[tgt_base_field.pad_token]
-        generator = CopyGenerator(opt.dec_rnn_size, vocab_size, pad_idx)
+        generator = CopyGenerator(opt.dec_rnn_size, vocab_size, pad_idx,
+                                  generator_linear=generator_linear)
     return generator
 
 
