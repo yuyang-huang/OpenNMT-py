@@ -610,9 +610,11 @@ def translate_opts(parser):
                    "shard_size=0 means no segmentation "
                    "shard_size>0 means segment dataset into multiple shards, "
                    "each shard has shard_size samples")
-    group.add('--output', '-output', default='pred.txt',
+    group.add('--output', '-output', default='/dev/null',
               help="Path to output the predictions (each line will "
                    "be the decoded sequence")
+    group.add('--json_output', '-json_output',
+              help="Path to output the scores and predictions, one line per source sentence")
     group.add('--report_bleu', '-report_bleu', action='store_true',
               help="Report bleu score after translation, "
                    "call tools/multi-bleu.perl on command line")
