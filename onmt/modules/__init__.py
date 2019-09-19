@@ -13,10 +13,15 @@ from onmt.modules.average_attn import AverageAttention
 from onmt.modules.tied_embedding_linear import TiedEmbeddingLinear
 from onmt.modules.ngram_attention import NGramAttention
 from onmt.modules.structured_joint_embeddings import StructuredJointEmbeddings
+from onmt.modules.shared_vocab_copy_generator import (
+    SharedVocabCopyGenerator,
+    SharedVocabCopyGeneratorLossCompute,
+)
 
 __all__ = ["Elementwise", "context_gate_factory", "ContextGate",
            "GlobalAttention", "ConvMultiStepAttention", "CopyGenerator",
            "CopyGeneratorLoss", "CopyGeneratorLossCompute",
+           "SharedVocabCopyGenerator", "SharedVocabCopyGeneratorLossCompute",
            "MultiHeadedAttention", "Embeddings", "PositionalEncoding",
            "WeightNormConv2d", "AverageAttention", "VecEmbedding",
            "TiedEmbeddingLinear", "NGramAttention", "StructuredJointEmbeddings"]

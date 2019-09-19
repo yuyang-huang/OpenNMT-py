@@ -17,6 +17,7 @@ from onmt.translate.beam_search import BeamSearch
 from onmt.translate.random_sampling import RandomSampling
 from onmt.utils.misc import tile, set_random_seed
 from onmt.modules.copy_generator import collapse_copy_scores
+from onmt.modules import SharedVocabCopyGenerator
 
 
 def build_translator(opt, report_score=True, logger=None, out_file=None):
@@ -571,8 +572,15 @@ class Translator(object):
             src_vocabs,
             memory_lengths,
             src_map=None,
+            src=None,
             step=None,
             batch_offset=None):
+        def _reorder(x, dim1, dim2):
+            return (x.view(dim1, dim2, -1)
+                    .transpose(0, 1)
+                    .contiguous()
+                    .view(dim1 * dim2, -1))
+
         if self.copy_attn:
             # Turn any copied words into UNKs.
             decoder_in = decoder_in.masked_fill(
@@ -598,22 +606,29 @@ class Translator(object):
             # or [ tgt_len, batch_size, vocab ] when full sentence
         else:
             attn = dec_attn["copy"]
-            scores = self.model.generator(dec_out.view(-1, dec_out.size(2)),
-                                          attn.view(-1, attn.size(2)),
-                                          src_map)
-            # here we have scores [tgt_lenxbatch, vocab] or [beamxbatch, vocab]
-            if batch_offset is None:
-                scores = scores.view(batch.batch_size, -1, scores.size(-1))
+            if isinstance(self.model.generator, SharedVocabCopyGenerator):
+                batch_size = batch_offset.size(0) if batch_offset is not None else batch.batch_size
+                scores = self.model.generator(_reorder(dec_out, batch_size, self.beam_size),
+                                              _reorder(attn, batch_size, self.beam_size),
+                                              src)
+                scores = _reorder(scores, self.beam_size, batch_size)
             else:
-                scores = scores.view(-1, self.beam_size, scores.size(-1))
-            scores = collapse_copy_scores(
-                scores,
-                batch,
-                self._tgt_vocab,
-                src_vocabs,
-                batch_dim=0,
-                batch_offset=batch_offset
-            )
+                scores = self.model.generator(dec_out.view(-1, dec_out.size(2)),
+                                              attn.view(-1, attn.size(2)),
+                                              src_map)
+                # here we have scores [tgt_lenxbatch, vocab] or [beamxbatch, vocab]
+                if batch_offset is None:
+                    scores = scores.view(batch.batch_size, -1, scores.size(-1))
+                else:
+                    scores = scores.view(-1, self.beam_size, scores.size(-1))
+                scores = collapse_copy_scores(
+                    scores,
+                    batch,
+                    self._tgt_vocab,
+                    src_vocabs,
+                    batch_dim=0,
+                    batch_offset=batch_offset
+                )
             scores = scores.view(decoder_in.size(0), -1, scores.size(-1))
             log_probs = scores.squeeze(0).log()
             # returns [(batch_size x beam_size) , vocab ] when 1 step
@@ -633,7 +648,8 @@ class Translator(object):
         assert not self.dump_beam
 
         # (0) Prep the components of the search.
-        use_src_map = self.copy_attn
+        share_vocab = isinstance(self.model.generator, SharedVocabCopyGenerator)
+        use_src_map = self.copy_attn and not share_vocab
         beam_size = self.beam_size
         batch_size = batch.batch_size
 
@@ -682,7 +698,8 @@ class Translator(object):
             stepwise_penalty=self.stepwise_penalty,
             block_ngram_repeat=self.block_ngram_repeat,
             exclusion_tokens=self._exclusion_idxs,
-            memory_lengths=memory_lengths)
+            memory_lengths=memory_lengths,
+            src=batch.src[0])
 
         for step in range(max_length):
             decoder_input = beam.current_predictions.view(1, -1, 1)
@@ -694,6 +711,7 @@ class Translator(object):
                 src_vocabs,
                 memory_lengths=memory_lengths,
                 src_map=src_map,
+                src=beam.src,
                 step=step,
                 batch_offset=beam._batch_offset)
 

@@ -17,6 +17,7 @@ from onmt.modules import (
     Embeddings,
     VecEmbedding,
     CopyGenerator,
+    SharedVocabCopyGenerator,
     TiedEmbeddingLinear,
     StructuredJointEmbeddings,
 )
@@ -122,8 +123,12 @@ def build_generator(opt, fields, decoder):
         )
     else:
         pad_idx = tgt_base_field.vocab.stoi[tgt_base_field.pad_token]
-        generator = CopyGenerator(opt.dec_rnn_size, vocab_size, pad_idx,
-                                  generator_linear=generator_linear)
+        if opt.share_decoder_embeddings and opt.share_embeddings:
+            generator = SharedVocabCopyGenerator(opt.dec_rnn_size, vocab_size, pad_idx,
+                                                 generator_linear=generator_linear)
+        else:
+            generator = CopyGenerator(opt.dec_rnn_size, vocab_size, pad_idx,
+                                      generator_linear=generator_linear)
     return generator
 
 

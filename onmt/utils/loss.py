@@ -31,10 +31,13 @@ def build_loss_compute(model, tgt_field, opt, train=True):
             "order to use --lambda_coverage != 0"
 
     if opt.copy_attn:
-        criterion = onmt.modules.CopyGeneratorLoss(
-            len(tgt_field.vocab), opt.copy_attn_force,
-            unk_index=unk_idx, ignore_index=padding_idx
-        )
+        if opt.share_embeddings and opt.share_decoder_embeddings:
+            criterion = nn.NLLLoss(ignore_index=padding_idx, reduction='none')
+        else:
+            criterion = onmt.modules.CopyGeneratorLoss(
+                len(tgt_field.vocab), opt.copy_attn_force,
+                unk_index=unk_idx, ignore_index=padding_idx
+            )
     elif opt.label_smoothing > 0 and train:
         criterion = LabelSmoothingLoss(
             opt.label_smoothing, len(tgt_field.vocab), ignore_index=padding_idx
@@ -51,10 +54,14 @@ def build_loss_compute(model, tgt_field, opt, train=True):
     use_raw_logits = isinstance(criterion, SparsemaxLoss)
     loss_gen = model.generator[0] if use_raw_logits else model.generator
     if opt.copy_attn:
-        compute = onmt.modules.CopyGeneratorLossCompute(
-            criterion, loss_gen, tgt_field.vocab, opt.copy_loss_by_seqlength,
-            lambda_coverage=opt.lambda_coverage
-        )
+        if opt.share_embeddings and opt.share_decoder_embeddings:
+            compute = onmt.modules.SharedVocabCopyGeneratorLossCompute(
+                criterion, loss_gen, opt.copy_loss_by_seqlength)
+        else:
+            compute = onmt.modules.CopyGeneratorLossCompute(
+                criterion, loss_gen, tgt_field.vocab, opt.copy_loss_by_seqlength,
+                lambda_coverage=opt.lambda_coverage
+            )
     else:
         compute = NMTLossCompute(
             criterion, loss_gen, lambda_coverage=opt.lambda_coverage)

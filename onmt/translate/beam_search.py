@@ -28,6 +28,7 @@ class BeamSearch(DecodeStrategy):
         exclusion_tokens (set[int]): See base.
         memory_lengths (LongTensor): Lengths of encodings. Used for
             masking attentions.
+        src (LongTensor): the source tokens. Used for copy generator.
 
     Attributes:
         top_beam_finished (ByteTensor): Shape ``(B,)``.
@@ -55,7 +56,7 @@ class BeamSearch(DecodeStrategy):
 
     def __init__(self, beam_size, batch_size, pad, bos, eos, n_best, mb_device,
                  global_scorer, min_length, max_length, return_attention,
-                 block_ngram_repeat, exclusion_tokens, memory_lengths,
+                 block_ngram_repeat, exclusion_tokens, memory_lengths, src,
                  stepwise_penalty, ratio):
         super(BeamSearch, self).__init__(
             pad, bos, eos, batch_size, mb_device, beam_size, min_length,
@@ -90,6 +91,7 @@ class BeamSearch(DecodeStrategy):
         ).repeat(batch_size)
         self.select_indices = None
         self._memory_lengths = memory_lengths
+        self.src = src
 
         # buffers for the topk scores and 'backpointer'
         self.topk_scores = torch.empty((batch_size, beam_size),
@@ -272,6 +274,7 @@ class BeamSearch(DecodeStrategy):
             .view(-1, self.alive_seq.size(-1))
         self.topk_scores = self.topk_scores.index_select(0, non_finished)
         self.topk_ids = self.topk_ids.index_select(0, non_finished)
+        self.src = self.src.index_select(1, non_finished)
         if self.alive_attn is not None:
             inp_seq_len = self.alive_attn.size(-1)
             self.alive_attn = attention.index_select(1, non_finished) \
