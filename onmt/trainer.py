@@ -12,6 +12,7 @@ import random
 from copy import deepcopy
 import torch
 import traceback
+import gc
 
 from onmt.modules import CopyGeneratorLossCompute
 import onmt.utils
@@ -322,6 +323,7 @@ class Trainer(object):
                 and (save_checkpoint_steps != 0
                      and step % save_checkpoint_steps == 0)):
                 self.model_saver.save(step, moving_average=self.moving_average)
+                gc.collect()
 
             if train_steps > 0 and step >= train_steps:
                 break
