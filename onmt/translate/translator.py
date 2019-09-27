@@ -451,7 +451,8 @@ class Translator(object):
         src, enc_states, memory_bank, src_lengths = self._run_encoder(batch)
         self.model.decoder.init_state(src, memory_bank, enc_states)
 
-        use_src_map = self.copy_attn
+        share_vocab = isinstance(self.model.generator, SharedVocabCopyGenerator)
+        use_src_map = self.copy_attn and not share_vocab
 
         results = {
             "predictions": None,
@@ -487,6 +488,7 @@ class Translator(object):
                 src_vocabs,
                 memory_lengths=memory_lengths,
                 src_map=src_map,
+                src=src,
                 step=step,
                 batch_offset=random_sampler.select_indices
             )
@@ -602,10 +604,17 @@ class Translator(object):
             attn = dec_attn["copy"]
             if isinstance(self.model.generator, SharedVocabCopyGenerator):
                 batch_size = batch_offset.size(0) if batch_offset is not None else batch.batch_size
-                scores = self.model.generator(_reorder(dec_out, batch_size, self.beam_size),
-                                              _reorder(attn, batch_size, self.beam_size),
-                                              src)
-                scores = _reorder(scores, self.beam_size, batch_size)
+                if dec_out.size(0) > 1:
+                    # scoring ground truth
+                    scores = self.model.generator(dec_out.view(-1, dec_out.size(2)),
+                                                  attn.view(-1, attn.size(2)),
+                                                  src)
+                else:
+                    # beam search
+                    scores = self.model.generator(_reorder(dec_out, batch_size, self.beam_size),
+                                                  _reorder(attn, batch_size, self.beam_size),
+                                                  src)
+                    scores = _reorder(scores, self.beam_size, batch_size)
             else:
                 scores = self.model.generator(dec_out.view(-1, dec_out.size(2)),
                                               attn.view(-1, attn.size(2)),
@@ -841,7 +850,7 @@ class Translator(object):
 
         log_probs, attn = self._decode_and_generate(
             tgt_in, memory_bank, batch, src_vocabs,
-            memory_lengths=src_lengths, src_map=src_map)
+            memory_lengths=src_lengths, src_map=src_map, src=batch.src[0])
 
         log_probs[:, :, self._tgt_pad_idx] = 0
         gold = tgt[1:]
