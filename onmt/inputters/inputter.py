@@ -683,7 +683,8 @@ class DatasetLazyIter(object):
 
     def __init__(self, dataset_paths, fields, batch_size, batch_size_fn,
                  batch_size_multiple, device, is_train, pool_factor,
-                 repeat=True, num_batches_multiple=1, yield_raw_example=False):
+                 repeat=True, num_batches_multiple=1, yield_raw_example=False,
+                 first_shard=0):
         self._paths = dataset_paths
         self.fields = fields
         self.batch_size = batch_size
@@ -695,6 +696,7 @@ class DatasetLazyIter(object):
         self.num_batches_multiple = num_batches_multiple
         self.yield_raw_example = yield_raw_example
         self.pool_factor = pool_factor
+        self.first_shard = first_shard
 
     def _iter_dataset(self, path):
         logger.info('Loading dataset from %s' % path)
@@ -725,12 +727,19 @@ class DatasetLazyIter(object):
         # del cur_dataset
         # gc.collect()
 
+    def _slice_paths(self, paths):
+        for i, path in enumerate(paths):
+            if path.endswith(f'.{self.first_shard}.pt'):
+                break
+        return paths[i:]
+
     def __iter__(self):
         num_batches = 0
         paths = self._paths
+        partial_epoch = self._slice_paths(paths)
         if self.is_train and self.repeat:
             # Cycle through the shards indefinitely.
-            paths = cycle(paths)
+            paths = chain(partial_epoch, cycle(paths))
         for path in paths:
             for batch in self._iter_dataset(path):
                 yield batch
@@ -806,7 +815,8 @@ def build_dataset_iter(corpus_type, fields, opt, is_train=True, multi=False):
         opt.pool_factor,
         repeat=not opt.single_pass,
         num_batches_multiple=max(opt.accum_count) * opt.world_size,
-        yield_raw_example=multi)
+        yield_raw_example=multi,
+        first_shard=opt.first_shard)
 
 
 def build_dataset_iter_multiple(train_shards, fields, opt):

@@ -441,6 +441,8 @@ def train_opts(parser):
               help='Number of training steps')
     group.add('--single_pass', '-single_pass', action='store_true',
               help="Make a single pass over the training dataset.")
+    group.add('--first_shard', '-first_shard', type=int, default=0,
+              help="The first shard index.")
     group.add('--epochs', '-epochs', type=int, default=0,
               help='Deprecated epochs see train_steps')
     group.add('--early_stopping', '-early_stopping', type=int, default=0,
