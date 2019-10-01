@@ -13,6 +13,7 @@ import onmt.model_builder
 import onmt.translate.beam
 import onmt.inputters as inputters
 import onmt.decoders.ensemble
+from onmt.translate.tree_guided_beam_search import TreeGuidedBeamSearch
 from onmt.translate.beam_search import BeamSearch
 from onmt.translate.random_sampling import RandomSampling
 from onmt.utils.misc import tile, set_random_seed
@@ -28,8 +29,15 @@ def build_translator(opt, report_score=True, logger=None, out_file=None):
         if len(opt.models) > 1 else onmt.model_builder.load_test_model
     fields, model, model_opt = load_test_model(opt)
 
+    if opt.mention:
+        tgt_vocab = dict(fields)["tgt"].base_field.vocab
+        fields['prefix_trees'] = inputters.mention_dataset.PrefixTreeField(tgt_vocab)
+        cls = TreeGuidedTranslator
+    else:
+        cls = Translator
+
     scorer = onmt.translate.GNMTGlobalScorer.from_opt(opt)
-    translator = Translator.from_opt(
+    translator = cls.from_opt(
         model,
         fields,
         opt,
@@ -284,6 +292,7 @@ class Translator(object):
             self,
             src,
             tgt=None,
+            mention=None,
             src_dir=None,
             batch_size=None,
             batch_type="sents",
@@ -310,12 +319,23 @@ class Translator(object):
         if batch_size is None:
             raise ValueError("batch_size must be set")
 
+        readers = [self.src_reader]
+        data = [("src", src)]
+        dirs = [src_dir]
+        if tgt:
+            readers.append(self.tgt_reader)
+            data.append(("tgt", tgt))
+            dirs.append(None)
+        if mention:
+            readers.append(self.mention_reader)
+            data.append(("prefix_trees", mention))
+            dirs.append(None)
+
         data = inputters.Dataset(
             self.fields,
-            readers=([self.src_reader, self.tgt_reader]
-                     if tgt else [self.src_reader]),
-            data=[("src", src), ("tgt", tgt)] if tgt else [("src", src)],
-            dirs=[src_dir, None] if tgt else [src_dir],
+            readers=readers,
+            data=data,
+            dirs=dirs,
             sort_key=inputters.str2sortkey[self.data_type],
             filter_pred=self._filter_pred
         )
@@ -892,3 +912,152 @@ class Translator(object):
             shell=True, stdin=self.out_file
         ).decode("utf-8").strip()
         return msg
+
+
+class TreeGuidedTranslator(Translator):
+    def __init__(self, mention_reader, **kwargs):
+        super(TreeGuidedTranslator, self).__init__(**kwargs)
+        self.mention_reader = mention_reader
+        self._tgt_sep_idx = self._tgt_vocab.stoi['<SEP>']
+
+    @classmethod
+    def from_opt(cls, model, fields, opt, model_opt,
+                 global_scorer=None, out_file=None, report_score=True, logger=None):
+        src_reader = inputters.str2reader[opt.data_type].from_opt(opt)
+        tgt_reader = inputters.str2reader["text"].from_opt(opt)
+        mention_reader = inputters.str2reader["mention"].from_opt(opt)
+        return cls(
+            model=model,
+            fields=fields,
+            src_reader=src_reader,
+            tgt_reader=tgt_reader,
+            mention_reader=mention_reader,
+            gpu=opt.gpu,
+            n_best=opt.n_best,
+            min_length=opt.min_length,
+            max_length=opt.max_length,
+            ratio=opt.ratio,
+            beam_size=opt.beam_size,
+            random_sampling_topk=opt.random_sampling_topk,
+            random_sampling_temp=opt.random_sampling_temp,
+            stepwise_penalty=opt.stepwise_penalty,
+            dump_beam=opt.dump_beam,
+            block_ngram_repeat=opt.block_ngram_repeat,
+            ignore_when_blocking=set(opt.ignore_when_blocking),
+            replace_unk=opt.replace_unk,
+            phrase_table=opt.phrase_table,
+            data_type=opt.data_type,
+            verbose=opt.verbose,
+            report_bleu=opt.report_bleu,
+            report_rouge=opt.report_rouge,
+            report_time=opt.report_time,
+            copy_attn=model_opt.copy_attn,
+            global_scorer=global_scorer,
+            out_file=out_file,
+            report_score=report_score,
+            logger=logger,
+            seed=opt.seed)
+
+    def _translate_batch(self, batch, src_vocabs, max_length,
+                         min_length=0, ratio=0., n_best=1, return_attention=False):
+        # (0) Prep the components of the search.
+        share_vocab = isinstance(self.model.generator, SharedVocabCopyGenerator)
+        use_src_map = self.copy_attn and not share_vocab
+        beam_size = self.beam_size
+        batch_size = batch.batch_size
+
+        # (1) Run the encoder on the src.
+        src, enc_states, memory_bank, src_lengths = self._run_encoder(batch)
+        self.model.decoder.init_state(src, memory_bank, enc_states)
+
+        results = {
+            "predictions": None,
+            "scores": None,
+            "attention": None,
+            "batch": batch,
+            "gold_score": self._gold_score(
+                batch, memory_bank, src_lengths, src_vocabs, use_src_map,
+                enc_states, batch_size, src),
+        }
+
+        # (2) Repeat src objects `beam_size` times.
+        # We use batch_size x beam_size
+        src_map = (tile(batch.src_map, beam_size, dim=1)
+                   if use_src_map else None)
+        self.model.decoder.map_state(
+            lambda state, dim: tile(state, beam_size, dim=dim))
+
+        if isinstance(memory_bank, tuple):
+            memory_bank = tuple(tile(x, beam_size, dim=1) for x in memory_bank)
+            mb_device = memory_bank[0].device
+        else:
+            memory_bank = tile(memory_bank, beam_size, dim=1)
+            mb_device = memory_bank.device
+        memory_lengths = tile(src_lengths, beam_size)
+
+        # (0) pt 2, prep the beam object
+        beam = TreeGuidedBeamSearch(
+            beam_size=beam_size,
+            n_best=n_best,
+            batch_size=batch_size,
+            global_scorer=self.global_scorer,
+            pad=self._tgt_pad_idx,
+            eos=self._tgt_eos_idx,
+            bos=self._tgt_bos_idx,
+            min_length=min_length,
+            ratio=ratio,
+            max_length=max_length,
+            mb_device=mb_device,
+            return_attention=return_attention,
+            stepwise_penalty=self.stepwise_penalty,
+            block_ngram_repeat=self.block_ngram_repeat,
+            exclusion_tokens=self._exclusion_idxs,
+            memory_lengths=memory_lengths,
+            src=batch.src[0],
+            prefix_trees=batch.prefix_trees,
+            sep=self._tgt_sep_idx,
+        )
+
+        for step in range(max_length):
+            decoder_input = beam.current_predictions.view(1, -1, 1)
+
+            log_probs, attn = self._decode_and_generate(
+                decoder_input,
+                memory_bank,
+                batch,
+                src_vocabs,
+                memory_lengths=memory_lengths,
+                src_map=src_map,
+                src=beam.src,
+                step=step,
+                batch_offset=beam._batch_offset)
+
+            beam.advance(log_probs, attn)
+            any_beam_is_finished = beam.is_finished.any()
+            if any_beam_is_finished:
+                beam.update_finished()
+                if beam.done:
+                    break
+
+            select_indices = beam.current_origin
+
+            if any_beam_is_finished:
+                # Reorder states.
+                if isinstance(memory_bank, tuple):
+                    memory_bank = tuple(x.index_select(1, select_indices)
+                                        for x in memory_bank)
+                else:
+                    memory_bank = memory_bank.index_select(1, select_indices)
+
+                memory_lengths = memory_lengths.index_select(0, select_indices)
+
+                if src_map is not None:
+                    src_map = src_map.index_select(1, select_indices)
+
+            self.model.decoder.map_state(
+                lambda state, dim: state.index_select(dim, select_indices))
+
+        results["scores"] = beam.scores
+        results["predictions"] = beam.predictions
+        results["attention"] = beam.attention
+        return results

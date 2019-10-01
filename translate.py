@@ -21,13 +21,16 @@ def main(opt):
     src_shards = split_corpus(opt.src, opt.shard_size)
     tgt_shards = split_corpus(opt.tgt, opt.shard_size) \
         if opt.tgt is not None else repeat(None)
-    shard_pairs = zip(src_shards, tgt_shards)
+    mention_shards = (split_corpus(opt.mention, opt.shard_size)
+                      if opt.mention is not None else repeat(None))
+    shard_pairs = zip(src_shards, tgt_shards, mention_shards)
 
-    for i, (src_shard, tgt_shard) in enumerate(shard_pairs):
+    for i, (src_shard, tgt_shard, mention_shard) in enumerate(shard_pairs):
         logger.info("Translating shard %d." % i)
         scores, predictions = translator.translate(
             src=src_shard,
             tgt=tgt_shard,
+            mention=mention_shard,
             src_dir=opt.src_dir,
             batch_size=opt.batch_size,
             batch_type=opt.batch_type,
