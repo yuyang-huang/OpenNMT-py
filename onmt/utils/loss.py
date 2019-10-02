@@ -54,7 +54,10 @@ def build_loss_compute(model, tgt_field, opt, train=True):
     use_raw_logits = isinstance(criterion, SparsemaxLoss)
     loss_gen = model.generator[0] if use_raw_logits else model.generator
     if opt.copy_attn:
-        if opt.share_embeddings and opt.share_decoder_embeddings:
+        if opt.adaptive_softmax:
+            compute = onmt.modules.AdaptiveCopyGeneratorLossCompute(
+                criterion, loss_gen, opt.copy_loss_by_seqlength)
+        elif opt.share_embeddings and opt.share_decoder_embeddings:
             compute = onmt.modules.SharedVocabCopyGeneratorLossCompute(
                 criterion, loss_gen, opt.copy_loss_by_seqlength)
         else:

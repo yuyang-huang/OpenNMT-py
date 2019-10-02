@@ -18,7 +18,7 @@ from onmt.translate.beam_search import BeamSearch
 from onmt.translate.random_sampling import RandomSampling
 from onmt.utils.misc import tile, set_random_seed
 from onmt.modules.copy_generator import collapse_copy_scores
-from onmt.modules import SharedVocabCopyGenerator
+from onmt.modules import SharedVocabCopyGenerator, AdaptiveCopyGenerator
 
 
 def build_translator(opt, report_score=True, logger=None, out_file=None):
@@ -187,7 +187,7 @@ class Translator(object):
         self.copy_attn = copy_attn
         self.use_src_map = (
             self.copy_attn
-            and not isinstance(model.generator, SharedVocabCopyGenerator)
+            and not isinstance(model.generator, (SharedVocabCopyGenerator, AdaptiveCopyGenerator))
         )
 
         self.global_scorer = global_scorer
@@ -623,7 +623,7 @@ class Translator(object):
             # or [ tgt_len, batch_size, vocab ] when full sentence
         else:
             attn = dec_attn["copy"]
-            if isinstance(self.model.generator, SharedVocabCopyGenerator):
+            if isinstance(self.model.generator, (SharedVocabCopyGenerator, AdaptiveCopyGenerator)):
                 is_scoring_ground_truth = decoder_in.size(0) > 1
                 log_probs = self.model.generator(dec_out.view(-1, dec_out.size(2)),
                                                  attn.view(-1, attn.size(2)),

@@ -195,6 +195,14 @@ def model_opts(parser):
               help="For FP16 training, the opt_level to use."
                    "See https://nvidia.github.io/apex/amp.html#opt-levels.")
 
+    # Adaptive input/output options
+    group.add('--adaptive_softmax', '-adaptive_softmax', action="store_true",
+              help="If specified, use Adaptive Softmax")
+    group.add('--adaptive_input', '-adaptive_input', action="store_true",
+              help="If specified, use Adaptive Input Representations")
+    group.add('--adaptive_cutoffs', '-adaptive_cutoffs', type=int, nargs='+',
+              help='The cutoffs of Adaptive Softmax')
+
 
 def preprocess_opts(parser):
     """ Pre-procesing options """

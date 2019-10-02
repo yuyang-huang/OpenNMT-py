@@ -20,6 +20,7 @@ from onmt.modules import (
     SharedVocabCopyGenerator,
     TiedEmbeddingLinear,
     StructuredJointEmbeddings,
+    AdaptiveCopyGenerator,
 )
 from onmt.modules.util_class import Cast
 from onmt.utils.misc import use_gpu
@@ -123,7 +124,9 @@ def build_generator(opt, fields, decoder):
         )
     else:
         pad_idx = tgt_base_field.vocab.stoi[tgt_base_field.pad_token]
-        if opt.share_decoder_embeddings and opt.share_embeddings:
+        if opt.adaptive_cutoffs:
+            generator = AdaptiveCopyGenerator(opt.dec_rnn_size, vocab_size, opt.adaptive_cutoffs)
+        elif opt.share_decoder_embeddings and opt.share_embeddings:
             generator = SharedVocabCopyGenerator(opt.dec_rnn_size, vocab_size, pad_idx,
                                                  generator_linear=generator_linear)
         else:
