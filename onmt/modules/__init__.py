@@ -20,6 +20,7 @@ from onmt.modules.shared_vocab_copy_generator import (
 from onmt.modules.adaptive import (
     AdaptiveCopyGenerator,
     AdaptiveCopyGeneratorLossCompute,
+    AdaptiveInput,
 )
 
 __all__ = ["Elementwise", "context_gate_factory", "ContextGate",
@@ -29,4 +30,4 @@ __all__ = ["Elementwise", "context_gate_factory", "ContextGate",
            "MultiHeadedAttention", "Embeddings", "PositionalEncoding",
            "WeightNormConv2d", "AverageAttention", "VecEmbedding",
            "TiedEmbeddingLinear", "NGramAttention", "StructuredJointEmbeddings",
-           "AdaptiveCopyGenerator", "AdaptiveCopyGeneratorLossCompute"]
+           "AdaptiveCopyGenerator", "AdaptiveCopyGeneratorLossCompute", "AdaptiveInput"]

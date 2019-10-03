@@ -31,7 +31,7 @@ def build_loss_compute(model, tgt_field, opt, train=True):
             "order to use --lambda_coverage != 0"
 
     if opt.copy_attn:
-        if opt.share_embeddings and opt.share_decoder_embeddings:
+        if opt.adaptive_softmax or (opt.share_embeddings and opt.share_decoder_embeddings):
             criterion = nn.NLLLoss(ignore_index=padding_idx, reduction='none')
         else:
             criterion = onmt.modules.CopyGeneratorLoss(

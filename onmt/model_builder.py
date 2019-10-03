@@ -21,6 +21,7 @@ from onmt.modules import (
     TiedEmbeddingLinear,
     StructuredJointEmbeddings,
     AdaptiveCopyGenerator,
+    AdaptiveInput,
 )
 from onmt.modules.util_class import Cast
 from onmt.utils.misc import use_gpu
@@ -51,6 +52,10 @@ def build_embeddings(opt, text_field, for_encoder=True):
 
     num_embs = [len(f.vocab) for _, f in text_field]
     num_word_embeddings, num_feat_embeddings = num_embs[0], num_embs[1:]
+
+    if opt.adaptive_input:
+        return AdaptiveInput(emb_dim, num_word_embeddings, opt.adaptive_cutoffs,
+                             padding_idx=word_padding_idx)
 
     fix_word_vecs = opt.fix_word_vecs_enc if for_encoder \
         else opt.fix_word_vecs_dec
@@ -101,15 +106,16 @@ def build_generator(opt, fields, decoder):
     vocab_size = len(tgt_base_field.vocab)
 
     # tied embeddings
-    if opt.share_decoder_embeddings:
-        if opt.joint_latent_size > 0:
-            generator_linear = StructuredJointEmbeddings(
-                opt.dec_rnn_size, opt.joint_latent_size, vocab_size, decoder.embeddings)
+    if not opt.adaptive_softmax:
+        if opt.share_decoder_embeddings:
+            if opt.joint_latent_size > 0:
+                generator_linear = StructuredJointEmbeddings(
+                    opt.dec_rnn_size, opt.joint_latent_size, vocab_size, decoder.embeddings)
+            else:
+                generator_linear = TiedEmbeddingLinear(
+                    opt.dec_rnn_size, vocab_size, decoder.embeddings)
         else:
-            generator_linear = TiedEmbeddingLinear(
-                opt.dec_rnn_size, vocab_size, decoder.embeddings)
-    else:
-        generator_linear = nn.Linear(opt.dec_rnn_size, vocab_size)
+            generator_linear = nn.Linear(opt.dec_rnn_size, vocab_size)
 
     if not opt.copy_attn:
         if opt.generator_function == "sparsemax":
@@ -124,8 +130,14 @@ def build_generator(opt, fields, decoder):
         )
     else:
         pad_idx = tgt_base_field.vocab.stoi[tgt_base_field.pad_token]
-        if opt.adaptive_cutoffs:
-            generator = AdaptiveCopyGenerator(opt.dec_rnn_size, vocab_size, opt.adaptive_cutoffs)
+        if opt.adaptive_softmax:
+            if opt.share_decoder_embeddings:
+                assert opt.adaptive_input
+                adaptive_input = decoder.embeddings
+            else:
+                adaptive_input = None
+            generator = AdaptiveCopyGenerator(opt.dec_rnn_size, vocab_size, opt.adaptive_cutoffs,
+                                              adaptive_input=adaptive_input)
         elif opt.share_decoder_embeddings and opt.share_embeddings:
             generator = SharedVocabCopyGenerator(opt.dec_rnn_size, vocab_size, pad_idx,
                                                  generator_linear=generator_linear)
@@ -243,7 +255,10 @@ def build_base_model(model_opt, fields, gpu, checkpoint=None, gpu_id=None):
         assert src_field.base_field.vocab == tgt_field.base_field.vocab, \
             "preprocess with -share_vocab if you use share_embeddings"
 
-        tgt_emb.word_lut.weight = src_emb.word_lut.weight
+        if model_opt.adaptive_softmax:
+            tgt_emb = src_emb
+        else:
+            tgt_emb.word_lut.weight = src_emb.word_lut.weight
 
     decoder = build_decoder(model_opt, tgt_emb)
 
