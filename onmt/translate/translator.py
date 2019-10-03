@@ -185,6 +185,10 @@ class Translator(object):
         self.report_time = report_time
 
         self.copy_attn = copy_attn
+        self.use_src_map = (
+            self.copy_attn
+            and not isinstance(model.generator, SharedVocabCopyGenerator)
+        )
 
         self.global_scorer = global_scorer
         if self.global_scorer.has_cov_pen and \
@@ -278,11 +282,10 @@ class Translator(object):
             print(msg)
 
     def _gold_score(self, batch, memory_bank, src_lengths, src_vocabs,
-                    use_src_map, enc_states, batch_size, src):
+                    enc_states, batch_size, src):
         if "tgt" in batch.__dict__:
-            gs = self._score_target(
-                batch, memory_bank, src_lengths, src_vocabs,
-                batch.src_map if use_src_map else None)
+            gs = self._score_target(batch, memory_bank, src_lengths, src_vocabs,
+                                    batch.src_map if self.use_src_map else None)
             self.model.decoder.init_state(src, memory_bank, enc_states)
         else:
             gs = [0] * batch_size
@@ -472,20 +475,17 @@ class Translator(object):
         src, enc_states, memory_bank, src_lengths = self._run_encoder(batch)
         self.model.decoder.init_state(src, memory_bank, enc_states)
 
-        share_vocab = isinstance(self.model.generator, SharedVocabCopyGenerator)
-        use_src_map = self.copy_attn and not share_vocab
-
         results = {
             "predictions": None,
             "scores": None,
             "attention": None,
             "batch": batch,
-            "gold_score": self._gold_score(
-                batch, memory_bank, src_lengths, src_vocabs, use_src_map,
-                enc_states, batch_size, src)}
+            "gold_score": self._gold_score(batch, memory_bank, src_lengths, src_vocabs,
+                                           enc_states, batch_size, src),
+        }
 
         memory_lengths = src_lengths
-        src_map = batch.src_map if use_src_map else None
+        src_map = batch.src_map if self.use_src_map else None
 
         if isinstance(memory_bank, tuple):
             mb_device = memory_bank[0].device
@@ -666,8 +666,6 @@ class Translator(object):
         assert not self.dump_beam
 
         # (0) Prep the components of the search.
-        share_vocab = isinstance(self.model.generator, SharedVocabCopyGenerator)
-        use_src_map = self.copy_attn and not share_vocab
         beam_size = self.beam_size
         batch_size = batch.batch_size
 
@@ -680,14 +678,13 @@ class Translator(object):
             "scores": None,
             "attention": None,
             "batch": batch,
-            "gold_score": self._gold_score(
-                batch, memory_bank, src_lengths, src_vocabs, use_src_map,
-                enc_states, batch_size, src)}
+            "gold_score": self._gold_score(batch, memory_bank, src_lengths, src_vocabs,
+                                           enc_states, batch_size, src),
+        }
 
         # (2) Repeat src objects `beam_size` times.
         # We use batch_size x beam_size
-        src_map = (tile(batch.src_map, beam_size, dim=1)
-                   if use_src_map else None)
+        src_map = tile(batch.src_map, beam_size, dim=1) if self.use_src_map else None
         self.model.decoder.map_state(
             lambda state, dim: tile(state, beam_size, dim=dim))
 
@@ -767,7 +764,6 @@ class Translator(object):
     def _translate_batch_deprecated(self, batch, src_vocabs):
         # (0) Prep each of the components of the search.
         # And helper method for reducing verbosity.
-        use_src_map = self.copy_attn
         beam_size = self.beam_size
         batch_size = batch.batch_size
 
@@ -794,14 +790,13 @@ class Translator(object):
             "scores": [],
             "attention": [],
             "batch": batch,
-            "gold_score": self._gold_score(
-                batch, memory_bank, src_lengths, src_vocabs, use_src_map,
-                enc_states, batch_size, src)}
+            "gold_score": self._gold_score(batch, memory_bank, src_lengths, src_vocabs,
+                                           enc_states, batch_size, src),
+        }
 
         # (2) Repeat src objects `beam_size` times.
         # We use now  batch_size x beam_size (same as fast mode)
-        src_map = (tile(batch.src_map, beam_size, dim=1)
-                   if use_src_map else None)
+        src_map = tile(batch.src_map, beam_size, dim=1) if self.use_src_map else None
         self.model.decoder.map_state(
             lambda state, dim: tile(state, beam_size, dim=dim))
 
@@ -955,8 +950,6 @@ class TreeGuidedTranslator(Translator):
     def _translate_batch(self, batch, src_vocabs, max_length,
                          min_length=0, ratio=0., n_best=1, return_attention=False):
         # (0) Prep the components of the search.
-        share_vocab = isinstance(self.model.generator, SharedVocabCopyGenerator)
-        use_src_map = self.copy_attn and not share_vocab
         beam_size = self.beam_size
         batch_size = batch.batch_size
 
@@ -969,15 +962,13 @@ class TreeGuidedTranslator(Translator):
             "scores": None,
             "attention": None,
             "batch": batch,
-            "gold_score": self._gold_score(
-                batch, memory_bank, src_lengths, src_vocabs, use_src_map,
-                enc_states, batch_size, src),
+            "gold_score": self._gold_score(batch, memory_bank, src_lengths, src_vocabs,
+                                           enc_states, batch_size, src),
         }
 
         # (2) Repeat src objects `beam_size` times.
         # We use batch_size x beam_size
-        src_map = (tile(batch.src_map, beam_size, dim=1)
-                   if use_src_map else None)
+        src_map = tile(batch.src_map, beam_size, dim=1) if self.use_src_map else None
         self.model.decoder.map_state(
             lambda state, dim: tile(state, beam_size, dim=dim))
 
