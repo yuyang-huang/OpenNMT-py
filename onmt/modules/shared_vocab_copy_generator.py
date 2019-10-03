@@ -6,6 +6,55 @@ import torch.cuda
 from onmt.utils.loss import LossComputeBase
 
 
+def collapse_copy_scores(prob, p_copy, attn, src, batch_first=False):
+    """Merge softmax distribution with copy attention.
+
+    Parameters
+    ----------
+    prob : torch.FloatTensor
+        The softmax distribution, size is ``[tgt_len * batch_size, vocab_size]``.
+    p_copy : torch.FloatTensor
+        The Bernoulli variable indicating whether to copy, size is ``[tgt_len * batch_size, 1]``.
+    attn : torch.FloatTensor
+        The attention alignment, size is ``[tgt_len * batch_size, src_len]``.
+    src : torch.LongTensor
+        The integer indices of source words of size ``[slen, batch, 1]``.
+    batch_first : bool
+        If True, then the 0th dimension of the inputs will be interpreted as
+        ``batch_size * tgt_len`` instead of ``tgt_len * batch_size``.
+
+    Returns
+    -------
+    log_prob : torch.FloatTensor
+        The final log-probability distribution, of size ``[tgt_len * batch_size, vocab_size]``
+        (or ``[batch_size * tgt_len, vocab_size]`` if `batch_first` is True.
+    """
+    # weighted by p(z=0) and reshape to [tlen, batch_size * vocab_size] for index_add
+    batch_size = src.size(1)
+    tgt_length = prob.size(0) // batch_size
+    prob = prob.mul(1 - p_copy)
+    if batch_first:
+        prob = prob.view(batch_size, tgt_length, -1).transpose(0, 1).contiguous()
+
+    # gather attention scores on src tokens and add to the output distribution
+    vocab_size = prob.size(-1)
+    batch_offset = torch.arange(0, batch_size * vocab_size,
+                                step=vocab_size,
+                                device=src.device).unsqueeze(1)
+    src = src.transpose(0, 1).squeeze(-1).add(batch_offset).contiguous().view(-1)
+
+    attn = attn.mul(p_copy)
+    if batch_first:
+        attn = attn.view(batch_size, tgt_length, -1).transpose(0, 1).contiguous()
+
+    prob = prob.view(tgt_length, -1).index_add(-1, src, attn.view(tgt_length, -1))
+    if batch_first:
+        prob = prob.view(tgt_length, batch_size, vocab_size).transpose(0, 1).contiguous()
+
+    # clamp just in case numerical error occurs
+    return torch.clamp(prob.view(-1, vocab_size), 1e-20).log()
+
+
 class SharedVocabCopyGenerator(nn.Module):
     """Copy generator with shared vocabulary (faster implementation).
     """
@@ -19,39 +68,14 @@ class SharedVocabCopyGenerator(nn.Module):
             self.linear = generator_linear
         self.linear_copy = nn.Linear(input_size, 1)
 
-    def forward(self, hidden, attn, src):
-        """
-        Compute a distribution over the target dictionary
-        extended by the dynamic dictionary implied by compying
-        source words.
-
-        Args:
-            hidden (`FloatTensor`): hidden outputs `[tlen * batch, input_size]`
-            attn (`FloatTensor`): attention over source tokens `[tlen * batch, slen]`
-            src (`LongTensor`): integer indices of each source word `[slen, batch, 1]`
-        """
-        # Probability of copying p(z=1)
+    def forward(self, hidden, attn, src, batch_first=False):
+        # probability of copying p(z=1)
         p_copy = torch.sigmoid(self.linear_copy(hidden))
 
-        # Original distribution
-        logits = self.linear(hidden)
-        logits[:, self.pad_idx] = -float('inf')
-        prob = torch.softmax(logits, 1)
+        # original distribution
+        prob = torch.softmax(self.linear(hidden), 1)
 
-        # Weighted by (1 - p_z) and reshape to [tlen, batch_size * tvocab] for index_add
-        tvocab = prob.size(-1)
-        batch_size = src.size(1)
-        tlen = hidden.size(0) // batch_size
-        prob = ((1 - p_copy) * prob).view(tlen, -1)
-
-        # Add copy distribution
-        batch_offset = torch.arange(0, batch_size * tvocab,
-                                    step=tvocab,
-                                    device=src.device).unsqueeze(1)
-        src = (src.transpose(0, 1).squeeze(-1) + batch_offset).contiguous().view(-1)
-        attn = (p_copy * attn).view(tlen, -1)
-
-        return prob.index_add(-1, src, attn).view(tlen * batch_size, tvocab) + 1e-20
+        return collapse_copy_scores(prob, p_copy, attn, src, batch_first=batch_first)
 
 
 class SharedVocabCopyGeneratorLossCompute(LossComputeBase):
@@ -67,19 +91,31 @@ class SharedVocabCopyGeneratorLossCompute(LossComputeBase):
         }
 
     def _compute_loss(self, batch, output, target, copy_attn):
-        """
-        Compute the loss. The args must match self._make_shard_state().
-        Args:
-            batch: the current batch.
-            output: the predict output from the model.
-            target: the validate target to compare output with.
-            copy_attn: the copy attention value.
+        """Compute the loss. The args must match self._make_shard_state().
+
+        Parameters
+        ----------
+        batch : torchtext.data.batch.Batch
+            The current batch.
+        output : torch.FloatTensor
+            Hidden outputs from the decoder, of size ``[tlen, batch, input_size]``.
+        target : torch.LongTensor
+            The integer indices of source words, of size ``[tlen, batch]``.
+        copy_attn : torch.FloatTensor
+            Attention over the source tokens, of size ``[tlen, batch, slen]``.
+
+        Returns
+        -------
+        loss : torch.FloatTensor
+            The scalar loss value.
+        stats : onmt.utils.Statistics
+            The statistics of this batch.
         """
         target = target.view(-1)
         scores = self.generator(self._bottle(output),
                                 self._bottle(copy_attn),
                                 batch.src[0])
-        loss = self.criterion(scores.log(), target)
+        loss = self.criterion(scores, target)
 
         # Compute sum of perplexities for stats
         loss_data = loss.sum().clone()

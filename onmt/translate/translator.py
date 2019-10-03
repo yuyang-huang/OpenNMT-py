@@ -624,18 +624,12 @@ class Translator(object):
         else:
             attn = dec_attn["copy"]
             if isinstance(self.model.generator, SharedVocabCopyGenerator):
-                batch_size = batch_offset.size(0) if batch_offset is not None else batch.batch_size
-                if dec_out.size(0) > 1:
-                    # scoring ground truth
-                    scores = self.model.generator(dec_out.view(-1, dec_out.size(2)),
-                                                  attn.view(-1, attn.size(2)),
-                                                  src)
-                else:
-                    # beam search
-                    scores = self.model.generator(_reorder(dec_out, batch_size, self.beam_size),
-                                                  _reorder(attn, batch_size, self.beam_size),
-                                                  src)
-                    scores = _reorder(scores, self.beam_size, batch_size)
+                is_scoring_ground_truth = decoder_in.size(0) > 1
+                log_probs = self.model.generator(dec_out.view(-1, dec_out.size(2)),
+                                                 attn.view(-1, attn.size(2)),
+                                                 src,
+                                                 batch_first=not is_scoring_ground_truth)
+                log_probs = log_probs.view(decoder_in.size(0), -1, log_probs.size(-1)).squeeze(0)
             else:
                 scores = self.model.generator(dec_out.view(-1, dec_out.size(2)),
                                               attn.view(-1, attn.size(2)),
@@ -653,8 +647,8 @@ class Translator(object):
                     batch_dim=0,
                     batch_offset=batch_offset
                 )
-            scores = scores.view(decoder_in.size(0), -1, scores.size(-1))
-            log_probs = scores.squeeze(0).log()
+                scores = scores.view(decoder_in.size(0), -1, scores.size(-1))
+                log_probs = scores.squeeze(0).log()
             # returns [(batch_size x beam_size) , vocab ] when 1 step
             # or [ tgt_len, batch_size, vocab ] when full sentence
         return log_probs, attn
