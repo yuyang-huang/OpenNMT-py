@@ -55,7 +55,7 @@ def build_embeddings(opt, text_field, for_encoder=True):
 
     if opt.adaptive_input:
         return AdaptiveInput(emb_dim, num_word_embeddings, opt.adaptive_cutoffs,
-                             padding_idx=word_padding_idx)
+                             div_value=opt.adaptive_div, padding_idx=word_padding_idx)
 
     fix_word_vecs = opt.fix_word_vecs_enc if for_encoder \
         else opt.fix_word_vecs_dec
@@ -137,6 +137,7 @@ def build_generator(opt, fields, decoder):
             else:
                 adaptive_input = None
             generator = AdaptiveCopyGenerator(opt.dec_rnn_size, vocab_size, opt.adaptive_cutoffs,
+                                              div_value=opt.adaptive_div,
                                               adaptive_input=adaptive_input)
         elif opt.share_decoder_embeddings and opt.share_embeddings:
             generator = SharedVocabCopyGenerator(opt.dec_rnn_size, vocab_size, pad_idx,

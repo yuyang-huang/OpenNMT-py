@@ -202,6 +202,8 @@ def model_opts(parser):
               help="If specified, use Adaptive Input Representations")
     group.add('--adaptive_cutoffs', '-adaptive_cutoffs', type=int, nargs='+',
               help='The cutoffs of Adaptive Softmax')
+    group.add('--adaptive_div', '-adaptive_div', type=int, default=4,
+              help='The division ratio between Adaptive Softmax clusters')
 
 
 def preprocess_opts(parser):
