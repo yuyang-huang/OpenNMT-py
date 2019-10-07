@@ -32,7 +32,13 @@ def build_loss_compute(model, tgt_field, opt, train=True):
 
     if opt.copy_attn:
         if opt.share_embeddings and opt.share_decoder_embeddings:
-            criterion = nn.NLLLoss(ignore_index=padding_idx, reduction='none')
+            if opt.label_smoothing > 0 and train:
+                criterion = LabelSmoothingLoss(opt.label_smoothing,
+                                               len(tgt_field.vocab),
+                                               ignore_index=padding_idx,
+                                               reduction='none')
+            else:
+                criterion = nn.NLLLoss(ignore_index=padding_idx, reduction='none')
         else:
             criterion = onmt.modules.CopyGeneratorLoss(
                 len(tgt_field.vocab), opt.copy_attn_force,
@@ -203,7 +209,8 @@ class LabelSmoothingLoss(nn.Module):
     KL-divergence between q_{smoothed ground truth prob.}(w)
     and p_{prob. computed by model}(w) is minimized.
     """
-    def __init__(self, label_smoothing, tgt_vocab_size, ignore_index=-100):
+    def __init__(self, label_smoothing, tgt_vocab_size, ignore_index=-100,
+                 reduction='sum'):
         assert 0.0 < label_smoothing <= 1.0
         self.ignore_index = ignore_index
         super(LabelSmoothingLoss, self).__init__()
@@ -214,6 +221,7 @@ class LabelSmoothingLoss(nn.Module):
         self.register_buffer('one_hot', one_hot.unsqueeze(0))
 
         self.confidence = 1.0 - label_smoothing
+        self.reduction = reduction
 
     def forward(self, output, target):
         """
@@ -224,7 +232,7 @@ class LabelSmoothingLoss(nn.Module):
         model_prob.scatter_(1, target.unsqueeze(1), self.confidence)
         model_prob.masked_fill_((target == self.ignore_index).unsqueeze(1), 0)
 
-        return F.kl_div(output, model_prob, reduction='sum')
+        return F.kl_div(output, model_prob, reduction=self.reduction)
 
 
 class NMTLossCompute(LossComputeBase):
