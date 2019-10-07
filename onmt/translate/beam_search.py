@@ -106,7 +106,7 @@ class BeamSearch(DecodeStrategy):
         self._coverage = None
 
         self._stepwise_cov_pen = (
-                stepwise_penalty and self.global_scorer.has_cov_pen)
+            stepwise_penalty and self.global_scorer.has_cov_pen)
         self._vanilla_cov_pen = (
             not stepwise_penalty and self.global_scorer.has_cov_pen)
         self._cov_pen = self.global_scorer.has_cov_pen
@@ -154,7 +154,7 @@ class BeamSearch(DecodeStrategy):
         # Flatten probs into a list of possibilities.
         curr_scores = log_probs / length_penalty
         curr_scores = curr_scores.reshape(_B, self.beam_size * vocab_size)
-        torch.topk(curr_scores,  self.beam_size, dim=-1,
+        torch.topk(curr_scores, self.beam_size, dim=-1,
                    out=(self.topk_scores, self.topk_ids))
 
         # Recover log probs.
@@ -258,7 +258,7 @@ class BeamSearch(DecodeStrategy):
         # If all sentences are translated, no need to go further.
         if len(non_finished) == 0:
             self.done = True
-            return
+            return non_finished
 
         _B_new = non_finished.shape[0]
         # Remove finished batches for the next step.
@@ -287,3 +287,5 @@ class BeamSearch(DecodeStrategy):
                 if self._stepwise_cov_pen:
                     self._prev_penalty = self._prev_penalty.index_select(
                         0, non_finished)
+
+        return non_finished

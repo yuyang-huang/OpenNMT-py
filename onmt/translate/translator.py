@@ -1006,7 +1006,7 @@ class TreeGuidedTranslator(Translator):
         for step in range(max_length):
             decoder_input = beam.current_predictions.view(1, -1, 1)
 
-            log_probs, attn = self._decode_and_generate(
+            log_probs, _ = self._decode_and_generate(
                 decoder_input,
                 memory_bank,
                 batch,
@@ -1017,7 +1017,7 @@ class TreeGuidedTranslator(Translator):
                 step=step,
                 batch_offset=beam._batch_offset)
 
-            beam.advance(log_probs, attn)
+            beam.advance(log_probs)
             any_beam_is_finished = beam.is_finished.any()
             if any_beam_is_finished:
                 beam.update_finished()
