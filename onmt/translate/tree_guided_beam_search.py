@@ -18,13 +18,14 @@ class TreeGuidedBeamSearch(BeamSearch):
         assert not self.return_attention
         assert self.block_ngram_repeat == 0
 
-    def topk(self, candidate_scores):
-        vocab_size = candidate_scores.size(-1)
-        _B = candidate_scores.shape[0] // self.beam_size
-        candidate_scores = candidate_scores.reshape(_B, self.beam_size * vocab_size)
-
-        torch.topk(candidate_scores, self.beam_size, dim=-1,
+    def topk(self, log_probs):
+        vocab_size = log_probs.size(-1)
+        _B = log_probs.shape[0] // self.beam_size
+        torch.topk(log_probs.view(_B, self.beam_size * vocab_size),
+                   self.beam_size,
+                   dim=-1,
                    out=(self.topk_scores, self.topk_ids))
+        self.topk_log_probs = self.topk_scores.clone()
 
         # resolve beam origin and map to batch index flat representation
         torch.div(self.topk_ids, vocab_size, out=self._batch_index)
@@ -98,3 +99,73 @@ class TreeGuidedBeamSearch(BeamSearch):
             next_prefix_tree_ptrs.append(batch_prefix_tree_ptrs)
 
         self.prefix_tree_ptrs = next_prefix_tree_ptrs
+
+
+class TreeGuidedDiverseBeamSearch(TreeGuidedBeamSearch):
+    def __init__(self, num_groups, diversity_strength, **kwargs):
+        super(TreeGuidedDiverseBeamSearch, self).__init__(**kwargs)
+        self.diversity_buf = None
+        self.diversity_strength = -diversity_strength
+        self.num_groups = num_groups
+        assert self.beam_size % self.num_groups == 0
+
+    def init_buffers(self, log_probs):
+        if self.diversity_buf is None:
+            self.diversity_buf = log_probs.new()
+        vocab_size = log_probs.size(-1)
+        _B = log_probs.shape[0] // self.beam_size
+        torch.zeros((_B, vocab_size), out=self.diversity_buf)
+
+    def topk(self, log_probs):
+        if len(self) == 1:
+            # do not apply diversity penalty to the relation symbols
+            return super().topk(log_probs)
+
+        self.init_buffers(log_probs)
+        _B, vocab_size = self.diversity_buf.size()
+
+        log_probs = log_probs.view(_B, self.beam_size, vocab_size)
+
+        group_topk_scores, group_topk_ids, group_beam_origins = [], [], []
+        for g in range(self.num_groups):
+            group_log_probs = log_probs[:, g::self.num_groups, :]
+            group_beam_size = group_log_probs.size(1)
+
+            # apply diversity penalty
+            if g > 0:
+                group_log_probs = torch.add(group_log_probs,
+                                            self.diversity_strength,
+                                            self.diversity_buf.unsqueeze(1))
+            else:
+                group_log_probs = group_log_probs.contiguous()
+            group_log_probs = group_log_probs.view(_B, group_beam_size * vocab_size)
+
+            topk_scores, topk_ids = torch.topk(group_log_probs, group_beam_size, dim=-1)
+
+            beam_origins = torch.div(topk_ids, vocab_size)
+            beam_origins.mul_(self.num_groups).add_(g)
+
+            topk_ids.fmod_(vocab_size)
+
+            group_topk_scores.append(topk_scores)
+            group_topk_ids.append(topk_ids)
+            group_beam_origins.append(beam_origins)
+
+            # update diversity penalty
+            self.diversity_buf.scatter_add_(
+                1,
+                topk_ids,
+                self.diversity_buf.new_ones(topk_ids.size())
+            )
+
+        # interleave results from different groups
+        self.topk_scores = torch.stack(group_topk_scores,
+                                       dim=2,
+                                       out=self.topk_scores).view(_B, self.beam_size)
+        self.topk_log_probs = self.topk_scores.clone()
+        self.topk_ids = torch.stack(group_topk_ids,
+                                    dim=2,
+                                    out=self.topk_ids).view(_B, self.beam_size)
+        self._batch_index = torch.stack(group_beam_origins,
+                                        dim=2,
+                                        out=self._batch_index).view(_B, self.beam_size)

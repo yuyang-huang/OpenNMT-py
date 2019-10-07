@@ -749,6 +749,13 @@ def translate_opts(parser):
               help="Using grayscale image can training "
                    "model faster and smaller")
 
+    # Options for Diverse Beam Search
+    group.add('--diverse_beam_search_groups', '-diverse_beam_search_groups',
+              type=int, default=1, help='Number of groups in diverse beam search, '
+              'specify 1 to use standard beam search.')
+    group.add('--diversity_strength', '-diversity_strength', type=float, default=.2,
+              help='The strength parameter of Diverse Beam Search.')
+
 
 # Copyright 2016 The Chromium Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be

@@ -13,7 +13,10 @@ import onmt.model_builder
 import onmt.translate.beam
 import onmt.inputters as inputters
 import onmt.decoders.ensemble
-from onmt.translate.tree_guided_beam_search import TreeGuidedBeamSearch
+from onmt.translate.tree_guided_beam_search import (
+    TreeGuidedBeamSearch,
+    TreeGuidedDiverseBeamSearch,
+)
 from onmt.translate.beam_search import BeamSearch
 from onmt.translate.random_sampling import RandomSampling
 from onmt.utils.misc import tile, set_random_seed
@@ -904,10 +907,12 @@ class Translator(object):
 
 
 class TreeGuidedTranslator(Translator):
-    def __init__(self, mention_reader, **kwargs):
+    def __init__(self, mention_reader, diverse_beam_search_groups, diversity_strength, **kwargs):
         super(TreeGuidedTranslator, self).__init__(**kwargs)
         self.mention_reader = mention_reader
         self._tgt_sep_idx = self._tgt_vocab.stoi['<SEP>']
+        self.diverse_beam_search_groups = diverse_beam_search_groups
+        self.diversity_strength = diversity_strength
 
     @classmethod
     def from_opt(cls, model, fields, opt, model_opt,
@@ -929,6 +934,8 @@ class TreeGuidedTranslator(Translator):
             beam_size=opt.beam_size,
             random_sampling_topk=opt.random_sampling_topk,
             random_sampling_temp=opt.random_sampling_temp,
+            diverse_beam_search_groups=opt.diverse_beam_search_groups,
+            diversity_strength=opt.diversity_strength,
             stepwise_penalty=opt.stepwise_penalty,
             dump_beam=opt.dump_beam,
             block_ngram_repeat=opt.block_ngram_repeat,
@@ -981,27 +988,52 @@ class TreeGuidedTranslator(Translator):
         memory_lengths = tile(src_lengths, beam_size)
 
         # (0) pt 2, prep the beam object
-        beam = TreeGuidedBeamSearch(
-            beam_size=beam_size,
-            n_best=n_best,
-            batch_size=batch_size,
-            global_scorer=self.global_scorer,
-            pad=self._tgt_pad_idx,
-            eos=self._tgt_eos_idx,
-            bos=self._tgt_bos_idx,
-            min_length=min_length,
-            ratio=ratio,
-            max_length=max_length,
-            mb_device=mb_device,
-            return_attention=return_attention,
-            stepwise_penalty=self.stepwise_penalty,
-            block_ngram_repeat=self.block_ngram_repeat,
-            exclusion_tokens=self._exclusion_idxs,
-            memory_lengths=memory_lengths,
-            src=batch.src[0],
-            prefix_trees=batch.prefix_trees,
-            sep=self._tgt_sep_idx,
-        )
+        if self.diverse_beam_search_groups > 1:
+            beam = TreeGuidedDiverseBeamSearch(
+                beam_size=beam_size,
+                n_best=n_best,
+                batch_size=batch_size,
+                global_scorer=self.global_scorer,
+                pad=self._tgt_pad_idx,
+                eos=self._tgt_eos_idx,
+                bos=self._tgt_bos_idx,
+                min_length=min_length,
+                ratio=ratio,
+                max_length=max_length,
+                mb_device=mb_device,
+                return_attention=return_attention,
+                stepwise_penalty=self.stepwise_penalty,
+                block_ngram_repeat=self.block_ngram_repeat,
+                exclusion_tokens=self._exclusion_idxs,
+                memory_lengths=memory_lengths,
+                src=batch.src[0],
+                prefix_trees=batch.prefix_trees,
+                sep=self._tgt_sep_idx,
+                num_groups=self.diverse_beam_search_groups,
+                diversity_strength=self.diversity_strength,
+            )
+        else:
+            beam = TreeGuidedBeamSearch(
+                beam_size=beam_size,
+                n_best=n_best,
+                batch_size=batch_size,
+                global_scorer=self.global_scorer,
+                pad=self._tgt_pad_idx,
+                eos=self._tgt_eos_idx,
+                bos=self._tgt_bos_idx,
+                min_length=min_length,
+                ratio=ratio,
+                max_length=max_length,
+                mb_device=mb_device,
+                return_attention=return_attention,
+                stepwise_penalty=self.stepwise_penalty,
+                block_ngram_repeat=self.block_ngram_repeat,
+                exclusion_tokens=self._exclusion_idxs,
+                memory_lengths=memory_lengths,
+                src=batch.src[0],
+                prefix_trees=batch.prefix_trees,
+                sep=self._tgt_sep_idx,
+            )
 
         for step in range(max_length):
             decoder_input = beam.current_predictions.view(1, -1, 1)
